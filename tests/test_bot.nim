@@ -306,6 +306,27 @@ suite "scripted baselines":
     expect EscrowError:
       discard extractJsonObject("I will hold my stock this turn.")
 
+    ## Anything AFTER the object is ignored: the object is the first
+    ## balanced one, not everything up to the last brace. Round 9 lost six
+    ## replies to "EOF expected" because a model signed off under its JSON.
+    let chatty = extractJsonObject(
+      "{\"sign\": [\"C4\"], \"say\": \"ore at 2.5\"}\n\nThat sale funds " &
+      "two fills, and I keep {my timber} for the commission.")
+    check chatty{"sign"}[0].getStr() == "C4"
+    check chatty{"say"}.getStr() == "ore at 2.5"
+    let twice = extractJsonObject(
+      "{\"sign\": [\"C1\"]}\nOn reflection: {\"sign\": [\"C2\"]}")
+    check twice{"sign"}[0].getStr() == "C1"
+    ## Nested objects and braces inside strings are still one object.
+    let nested = extractJsonObject(
+      "{\"give\": [{\"to\": \"" & you & "\", \"n\": 1, \"good\": \"ORE\"}], " &
+      "\"notes\": \"a { in a string, and a \\\" quote\"}  trailing words")
+    check nested{"give"}.len == 1
+    check nested{"notes"}.getStr().startsWith("a { in a string")
+    ## An object that never closes is still no object at all.
+    expect EscrowError:
+      discard extractJsonObject("{\"sign\": [\"C1\"")
+
     ## The strict validator is what buys a seat its one retry.
     let illegal = parseDecision(parseJson(
       """{"sign": ["C9"]}"""), sim, me)

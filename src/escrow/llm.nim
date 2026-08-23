@@ -528,11 +528,42 @@ proc userPrompt*(sim: Sim, seat: int, prompt: string): string =
 
 # ---- Anthropic / Bedrock transport ------------------------------------------
 
-proc extractJsonObject*(text: string): JsonNode =
-  ## Pulls the first {...} object out of a model response, tolerating fences.
+proc firstJsonObject*(text: string): string =
+  ## The FIRST balanced top-level `{...}` in `text`, or "" when there is
+  ## none. Braces inside JSON strings (and escaped quotes) are skipped, so
+  ## a contract body full of newlines cannot confuse the scan.
   let start = text.find('{')
-  let stop = text.rfind('}')
-  if start < 0 or stop <= start:
+  if start < 0:
+    return ""
+  var depth = 0
+  var inString = false
+  var escaped = false
+  for index in start .. text.high:
+    let c = text[index]
+    if inString:
+      if escaped: escaped = false
+      elif c == '\\': escaped = true
+      elif c == '"': inString = false
+      continue
+    case c
+    of '"': inString = true
+    of '{': inc depth
+    of '}':
+      dec depth
+      if depth == 0:
+        return text[start .. index]
+    else: discard
+  ""
+
+proc extractJsonObject*(text: string): JsonNode =
+  ## Pulls the first {...} object out of a model response, tolerating
+  ## fences, a preamble, and ANYTHING after the object — trailing prose or
+  ## a second object is simply ignored. (Taking everything up to the last
+  ## `}` instead made a chatty reply fail with "EOF expected", which cost
+  ## six of round 9's 35 rejected replies.) A reply with no complete
+  ## object in it is still an error.
+  let body = firstJsonObject(text)
+  if body.len == 0:
     ## Quote the head of the reply so a hosted log shows WHAT the model
     ## sent instead of JSON (prose, a refusal, a cut-off analysis...).
     var head = text.strip()
@@ -540,7 +571,7 @@ proc extractJsonObject*(text: string): JsonNode =
       head = head.runeSubStr(0, 160) & "..."
     raise newException(EscrowError, "no JSON object in response: " &
       head.replace("\n", " "))
-  parseJson(text[start .. stop])
+  parseJson(body)
 
 proc requestFor(client: LlmClient, system, user: string):
     tuple[url: string, headers: HttpHeaders, body: string] =
