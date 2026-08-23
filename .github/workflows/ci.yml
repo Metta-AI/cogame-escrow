@@ -149,6 +149,20 @@ jobs:
           done
           exit "${fail}"
 
+      # Checklist item 7: the scripted baseline's parameters are TUNED, not
+      # guessed. tools/tune_baseline.nim sweeps them by playing whole
+      # all-scripted episodes through the shipped escrow/sim + escrow/llm,
+      # and --check exits non-zero if src/escrow/llm.nim's
+      # DefaultTraderParams stops being the grid's best legal cell (or stops
+      # clearing the 1.3x autarky canary). --quick keeps it bounded: two
+      # seeds, 12 turns, one price column -- 60 episodes, about a second.
+      # docs/tuning.md holds the full recorded grid.
+      - name: Re-run the baseline tuning sweep
+        run: |
+          set -euo pipefail
+          nim r --hints:off -d:release --path:src \
+            tools/tune_baseline.nim --quick --check
+
   # ---------------------------------------------------------------------
   # Packaging smoke: the production image builds, and one real episode runs
   # end to end in raw docker with the certification fixture's seat mix.

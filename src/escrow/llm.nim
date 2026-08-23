@@ -31,14 +31,21 @@ const
   BedrockAnthropicVersion = "bedrock-2023-05-31"
   ## Turns of public ledger a seat is shown.
   LedgerTurns = 6
-  ## The scripted baseline's house price table. Flat across the three
-  ## goods, which is what makes an equal-count swap exactly fair and an
-  ## unequal one obviously not.
-  HousePrice*: array[Good, int] = [gOre: 3, gGrain: 3, gTimber: 3, gHearts: 1]
-  ## Units the `trader` baseline puts on the table in one contract.
-  TradeUnits* = 4
 
 type
+  TraderParams* = object
+    ## The `trader` baseline's tunable knobs, in one place so the grid
+    ## harness (`tools/tune_baseline.nim`) can sweep them through the very
+    ## code the game runs. Defaults live in `DefaultTraderParams` below;
+    ## the sweep that chose them is recorded in `docs/tuning.md`.
+    housePrice*: array[Good, int]
+      ## The house price table used to value a bundle.
+    tradeUnits*: int
+      ## Units the baseline puts on the table in one contract.
+    needFills*: int
+      ## Copies of its own commission the baseline reserves before it
+      ## calls a good surplus.
+
   ScriptKind* = enum
     skNone = "none"
     skTrader = "trader"
@@ -159,20 +166,50 @@ proc newLlmClient*(config: GameConfig): LlmClient =
 
 # ---- Scripted baselines -----------------------------------------------------
 
-proc bundleValue*(bundle: Bundle): int =
-  for good in Good:
-    result += bundle[good] * HousePrice[good]
+const
+  ## TUNED, NOT GUESSED. `tools/tune_baseline.nim` sweeps these knobs —
+  ## tradeUnits x needFills x a flat goods price — over a fixed seed set,
+  ## playing whole all-scripted episodes through this very module, and
+  ## ranks the cells by hearts minted against the autarky floor. The grid
+  ## it printed, and the reasoning that picked this cell, are recorded in
+  ## `docs/tuning.md`; CI re-runs a bounded slice of that sweep and fails
+  ## if these values stop being its argmax.
+  ##
+  ## tradeUnits 6 / needFills 3 is the argmax of units 2..12 x fills 1..6:
+  ## 1074 hearts minted a seed against the 474-heart hoarder floor (2.27x),
+  ## and the best trader edge in a 3-trader/1-hoarder mix too (180.4 vs
+  ## 132.8 hearts). The guessed 4/2 it replaces minted 834 (1.76x).
+  ##
+  ## The price table is flat across the three goods, which is what makes an
+  ## equal-count swap exactly fair and an unequal one obviously not; hearts
+  ## are priced at 1 so score is never a cheap input. Price is the one knob
+  ## the sweep cannot separate — every price column of the grid is
+  ## identical, because a baseline contract is always an equal-count swap
+  ## of two goods, so a flat table values it at zero gain whatever the
+  ## level. It bites only on a MODEL's asymmetric offer, which the sweep,
+  ## being all-scripted, never produces.
+  DefaultTraderParams* = TraderParams(
+    housePrice: [gOre: 3, gGrain: 3, gTimber: 3, gHearts: 1],
+    tradeUnits: 6,
+    needFills: 3)
 
-proc twoFillNeed*(sim: Sim, seat: int): Bundle =
+proc bundleValue*(bundle: Bundle,
+    params: TraderParams = DefaultTraderParams): int =
   for good in Good:
-    result[good] = MaxFills * Commission[sim.profileOf[seat]][good]
+    result += bundle[good] * params.housePrice[good]
+
+proc twoFillNeed*(sim: Sim, seat: int,
+    params: TraderParams = DefaultTraderParams): Bundle =
+  for good in Good:
+    result[good] = params.needFills * Commission[sim.profileOf[seat]][good]
 
 proc byGain(a, b: SignPick): int =
   ## Best value first; contract-id order breaks every tie, so the bot is
   ## fully deterministic.
   if a.gain != b.gain: b.gain - a.gain else: a.index - b.index
 
-proc traderAction*(sim: Sim, seat: int): Decision =
+proc traderAction*(sim: Sim, seat: int,
+    params: TraderParams = DefaultTraderParams): Decision =
   ## The sensible partner, and the universal fallback. Deterministic, and
   ## legal BY CONSTRUCTION: it only signs offers addressed to it that it
   ## can pay, and it only posts an offer when both it and the addressee
@@ -193,7 +230,8 @@ proc traderAction*(sim: Sim, seat: int): Decision =
     if contract.thenPay == poAcceptor:
       for good in Good:
         received[good] += contract.ask[good]
-    let gain = bundleValue(received) - bundleValue(contract.ask)
+    let gain = bundleValue(received, params) -
+      bundleValue(contract.ask, params)
     if gain < 0:
       continue
     candidates.add((gain: gain, index: index))
@@ -219,7 +257,7 @@ proc traderAction*(sim: Sim, seat: int): Decision =
     return
   if sim.liveContracts(seat) != 0:
     return
-  let need = sim.twoFillNeed(seat)
+  let need = sim.twoFillNeed(seat, params)
   var surplus = gOre
   var surplusExcess = 0
   var deficit = gOre
@@ -245,7 +283,7 @@ proc traderAction*(sim: Sim, seat: int): Decision =
       target = other
   if target < 0:
     return
-  let units = min(TradeUnits, surplusExcess)
+  let units = min(params.tradeUnits, surplusExcess)
   var lock: Bundle
   lock[surplus] = units
   var ask: Bundle
@@ -260,13 +298,14 @@ proc traderAction*(sim: Sim, seat: int): Decision =
     "ELSE KEEP"
   ].join("\n")
 
-proc scriptedAction*(sim: Sim, seat: int, kind: ScriptKind): Decision =
+proc scriptedAction*(sim: Sim, seat: int, kind: ScriptKind,
+    params: TraderParams = DefaultTraderParams): Decision =
   ## Rule-based baseline for `seat`. Always legal; never talks or notes.
   ## `hoarder` produces, fills commissions and does nothing else — the
   ## autarky floor any trading policy has to beat.
   case kind
   of skHoarder: Decision()
-  else: traderAction(sim, seat)
+  else: traderAction(sim, seat, params)
 
 # ---- Prompt building --------------------------------------------------------
 
