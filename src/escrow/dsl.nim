@@ -112,6 +112,32 @@ proc collapse(text: string): string =
   ## Whitespace runs inside a line become one space.
   text.splitWhitespace().join(" ")
 
+proc firstWord(line: string): string =
+  let parts = line.splitWhitespace()
+  if parts.len == 0: "" else: parts[0].toUpperAscii()
+
+proc normalizeOfferText*(text: string): string =
+  ## Pre-parse hygiene, never semantics: the contract is the run of lines
+  ## from the OFFER line to the ELSE line, so a model that writes the
+  ## addressee's alias on a line of its own above the contract, or a word
+  ## of explanation under it, is still understood. Nothing inside those
+  ## lines is touched, and text with no OFFER line at all comes back
+  ## unchanged so it is rejected exactly as before.
+  let lines = text.splitLines()
+  var first = -1
+  for index, line in lines:
+    if firstWord(line) == "OFFER":
+      first = index
+      break
+  if first < 0:
+    return text
+  var last = lines.high
+  for index in first .. lines.high:
+    if firstWord(lines[index]) == "ELSE":
+      last = index
+      break
+  lines[first .. last].join("\n")
+
 proc parseCount(token: string, value: var int): bool =
   try:
     value = parseInt(token)
@@ -201,14 +227,16 @@ proc failure(reason, message: string): ParseResult =
 proc parseContract*(text: string, sim: Sim, proposer: int): ParseResult =
   ## Parses AND validates one offer against the floor as it stands.
   ## Every rejection carries a machine reason code so the retry batch can
-  ## quote the exact problem back to the model.
+  ## quote the exact problem back to the model. The submitted text is
+  ## measured before `normalizeOfferText` trims it, so padding an offer
+  ## out past the cap is still `too_long`.
   if text.strip().len == 0:
     return failure("syntax", "the offer is empty")
   if text.runeLen > MaxOfferChars:
     return failure("too_long",
       "a contract is at most " & $MaxOfferChars & " characters")
   var lines: seq[string]
-  for raw in text.splitLines():
+  for raw in normalizeOfferText(text).splitLines():
     let line = collapse(raw)
     if line.len > 0:
       lines.add(line)
