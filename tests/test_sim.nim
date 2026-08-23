@@ -356,6 +356,38 @@ suite "escrow mechanics":
     check sim.contracts[0].status == csExpired  ## it expired the same turn
     check sim.seats[mason].escrowed[gOre] == 0  ## and the proposer got it back
 
+  test "5d. over-cap gives and signings are dropped with a reject event":
+    var sim = initSim(fixtureConfig(turns = 8, seed = 5))
+    let mason = sim.seatOfProfile[pMason]
+    let farmer = sim.seatOfProfile[pFarmer]
+    var moves: array[Seats, Move]
+    ## Only a hand-built move gets here — the reply parser truncates
+    ## first — but nothing the sim drops may be dropped in silence.
+    moves[mason] = Move(
+      gives: @[GiveOrder(to: farmer, n: 1, good: gOre),
+               GiveOrder(to: farmer, n: 1, good: gOre),
+               GiveOrder(to: farmer, n: 1, good: gOre)],
+      signs: @["C1", "C2", "C3"])
+    sim.moveAll(moves)
+    var gives, signs, rejects = 0
+    for event in sim.events:
+      case event.kind
+      of evGive: inc gives
+      of evSign: inc signs
+      of evReject:
+        inc rejects
+        check event.seat == mason
+        check event.text.startsWith("over_cap")
+      of evMove:
+        if event.seat == mason:
+          ## What the replay carries is the truncated decision.
+          check event.gives.len == MaxGives
+          check event.signs.len == MaxSigns
+      else: discard
+    check gives == MaxGives
+    check signs == MaxSigns
+    check rejects == 2
+
 suite "settlement":
   test "6. all four payouts against both condition outcomes":
     for condTrue in [true, false]:

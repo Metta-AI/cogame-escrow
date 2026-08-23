@@ -477,6 +477,17 @@ proc resolveTurn(sim: var Sim) =
   else:
     sim.openTurn()
 
+proc rejectOverCap(sim: var Sim, seat, dropped: int, what: string,
+    cap: int) =
+  ## An over-cap action is a `reject` like any other refused action, so a
+  ## spectator can see the entries went and why.
+  var event = blankEvent(evReject)
+  event.turn = sim.turn
+  event.seat = seat
+  event.text = "over_cap: " & $dropped & " " & what &
+    " past the cap of " & $cap & " dropped"
+  sim.addEvent(event)
+
 proc applyMove*(sim: var Sim, seat: int, move: Move, scripted: bool) =
   ## Records `seat`'s decision for the live turn. Illegal PARTS of a
   ## decision are not fatal here — they are rejected and logged when the
@@ -490,9 +501,13 @@ proc applyMove*(sim: var Sim, seat: int, move: Move, scripted: bool) =
     raise newException(EscrowError,
       sim.names[seat] & " has already decided this turn")
   var decision = move
+  ## Dropping an over-cap entry is never silent: the ledger says which cap
+  ## bit and how many entries went with it.
   if decision.gives.len > MaxGives:
+    sim.rejectOverCap(seat, decision.gives.len - MaxGives, "gives", MaxGives)
     decision.gives.setLen(MaxGives)
   if decision.signs.len > MaxSigns:
+    sim.rejectOverCap(seat, decision.signs.len - MaxSigns, "signings", MaxSigns)
     decision.signs.setLen(MaxSigns)
   decision.offer = clip(decision.offer, MaxOfferChars)
   var message = decision.say.replace("\n", " ")
