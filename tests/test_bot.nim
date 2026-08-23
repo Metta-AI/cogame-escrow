@@ -5,8 +5,64 @@
 ## of four traders has to mint materially more hearts than the autarky
 ## floor, or the price band is broken.
 
-import std/[json, monotimes, os, strutils, times, unicode, unittest]
+import std/[json, monotimes, nativesockets, net, os, strutils, times,
+  unicode, unittest]
 import escrow/[llm, sim]
+
+## ---- A stub Bedrock endpoint ------------------------------------------
+## Test 18 needs a reply that PARSES and VALIDATES: that is the only way
+## to execute the line which records a decision as the MODEL's own
+## (`scripted: false`). curly speaks real HTTP over a real socket, so the
+## endpoint is a real socket too.
+
+var
+  stubServed = 0     ## replies handed out; read only after the join
+  stubStop = false   ## set by the test to retire the thread
+
+proc stubServe(arg: tuple[fd: SocketHandle, reply: string]) {.thread.} =
+  let listener = newSocket(arg.fd, AF_INET, SOCK_STREAM, IPPROTO_TCP)
+  var idle = 0
+  ## Bounded twice over: the test flips `stubStop`, and 10 s of silence
+  ## retires the thread anyway, so a broken test can never hang CI.
+  while not stubStop and idle < 50:
+    var waiting = @[arg.fd]
+    if selectRead(waiting, 200) <= 0:
+      inc idle
+      continue
+    idle = 0
+    var client: Socket
+    try:
+      listener.accept(client)
+    except CatchableError:
+      break
+    try:
+      var request = ""
+      while not request.contains("\r\n\r\n"):
+        let chunk = client.recv(4096, timeout = 5000)
+        if chunk.len == 0:
+          break
+        request.add(chunk)
+      ## libcurl sends a body this size in two steps.
+      if "100-continue" in request.toLowerAscii():
+        client.send("HTTP/1.1 100 Continue\r\n\r\n")
+      var length = 0
+      for line in request.split("\r\n"):
+        if line.toLowerAscii().startsWith("content-length:"):
+          length = line[15 .. ^1].strip().parseInt()
+      var body = request[request.find("\r\n\r\n") + 4 .. ^1]
+      while body.len < length:
+        let chunk = client.recv(min(4096, length - body.len), timeout = 5000)
+        if chunk.len == 0:
+          break
+        body.add(chunk)
+      client.send("HTTP/1.1 200 OK\r\n" &
+        "content-type: application/json\r\n" &
+        "content-length: " & $arg.reply.len & "\r\n" &
+        "connection: close\r\n\r\n" & arg.reply)
+      inc stubServed
+    except CatchableError:
+      discard
+    client.close()
 
 proc fixture(seed: int, turns = 16, talk = true): GameConfig =
   result = defaultGameConfig()
@@ -306,3 +362,66 @@ suite "scripted baselines":
         ## What the replay carries, and what phase 60 counts.
         check event.scripted
     check moves == Seats
+
+  test "18. an accepted model reply is recorded as the model's own":
+    ## The mirror of test 17, and the only test that reaches the line
+    ## writing `scripted: false`: a stub endpoint returns ONE valid reply
+    ## per open seat, so the batch is MIXED — seat 0 is registered as the
+    ## scripted trader and never leaves the box, the other three are the
+    ## model's own decisions — and the recorded move events must say so
+    ## seat by seat, since phase 60 counts fallbacks off that flag.
+    var listener = newSocket()
+    listener.setSockOpt(OptReuseAddr, true)
+    listener.bindAddr(Port(0), "127.0.0.1")
+    listener.listen()
+    let port = listener.getLocalAddr()[1]
+    let reply = $ %*{
+      "content": [{"type": "text", "text":
+        """{"say": "stub says hello", "notes": "stub notes"}"""}],
+      "stop_reason": "end_turn"
+    }
+    stubServed = 0
+    stubStop = false
+    var stub: Thread[tuple[fd: SocketHandle, reply: string]]
+    createThread(stub, stubServe, (fd: listener.getFd, reply: reply))
+
+    putEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "http://127.0.0.1:" & $port.int)
+    putEnv("AWS_BEARER_TOKEN_BEDROCK", "stub-token")
+    var config = fixture(11, turns = 4)
+    config.llmTimeoutSeconds = 15
+    let client = newLlmClient(config)
+    delEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+    delEnv("AWS_BEARER_TOKEN_BEDROCK")
+    check not client.disabled
+
+    var sim = initSim(config)
+    let seats = sim.pendingSeats()
+    check seats.len == Seats
+    let decisions = client.decideAll(sim, seats, @["", "", "", ""],
+      @[skTrader, skNone, skNone, skNone])
+    stubStop = true
+    joinThread(stub)
+    listener.close()
+    ## One request per model-driven seat, and no retry batch.
+    check stubServed == Seats - 1
+    check decisions.len == seats.len
+    for index, seat in seats:
+      if seat == 0:
+        let expected = scriptedAction(sim, seat, skTrader)
+        check decisions[index].scripted
+        check decisions[index].move.offer == expected.offer
+        check decisions[index].move.say.len == 0
+      else:
+        ## The reply parsed AND passed validateMove, so it is the seat's
+        ## own move, not the house baseline's.
+        check not decisions[index].scripted
+        check decisions[index].move.say == "stub says hello"
+        check decisions[index].move.notes == "stub notes"
+      sim.applyMove(seat, decisions[index].move, decisions[index].scripted)
+    var scriptedMoves = 0
+    var modelMoves = 0
+    for event in sim.events:
+      if event.kind == evMove:
+        if event.scripted: inc scriptedMoves else: inc modelMoves
+    check scriptedMoves == 1
+    check modelMoves == Seats - 1
