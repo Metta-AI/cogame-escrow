@@ -716,8 +716,13 @@ suite "replay":
     ## The turn has resolved, so last turn's says now sit in `heard`.
     check sim.heard[mason].runeLen == MaxSayLen
     check sim.heard[mason].validateUtf8() == -1
+    ## The cut is marked, so a reader can tell a truncation from a
+    ## deliberately terse message — and the marker costs one rune, so the
+    ## cap still holds exactly.
+    check sim.heard[mason].endsWith("…")
     check sim.notes[mason].runeLen == MaxNotesLen
     check sim.notes[mason].validateUtf8() == -1
+    check sim.notes[mason].endsWith("…")
     ## A truncated contract fails the parser, which is a refusal, not a
     ## crash — and the refusal text is itself valid UTF-8.
     check sim.has(evReject)

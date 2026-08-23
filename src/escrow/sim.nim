@@ -76,12 +76,17 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
     min(config.turnDelayMs, PacingBudgetMs div max(result.turns, 1))
   result.sampled = true
 
-proc clip*(text: string, limit: int): string =
+proc clip*(text: string, limit: int, marker = false): string =
   ## Cut on a RUNE boundary: a byte slice through a multi-byte character
-  ## would leave invalid UTF-8 in the replay and break its JSON.
+  ## would leave invalid UTF-8 in the replay and break its JSON. `marker`
+  ## ends the cut text with `…` (still exactly `limit` runes) for the
+  ## fields the reply schema says are marked — `say` and `notes`; the
+  ## offer DSL is cut bare, since a marker is not contract syntax.
   result = text.strip()
   if result.runeLen > limit:
-    result = result.runeSubStr(0, limit)
+    result =
+      if marker: result.runeSubStr(0, limit - 1) & "…"
+      else: result.runeSubStr(0, limit)
 
 proc addEvent(sim: var Sim, event: GameEvent) =
   sim.events.add(event)
@@ -513,8 +518,8 @@ proc applyMove*(sim: var Sim, seat: int, move: Move, scripted: bool) =
   var message = decision.say.replace("\n", " ")
   if not sim.config.talk:
     message = ""
-  decision.say = clip(message, MaxSayLen)
-  decision.notes = clip(decision.notes, MaxNotesLen)
+  decision.say = clip(message, MaxSayLen, marker = true)
+  decision.notes = clip(decision.notes, MaxNotesLen, marker = true)
   sim.moves[seat] = decision
   sim.moveIn[seat] = true
   sim.says[seat] = decision.say
