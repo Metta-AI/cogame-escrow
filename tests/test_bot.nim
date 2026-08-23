@@ -5,7 +5,7 @@
 ## of four traders has to mint materially more hearts than the autarky
 ## floor, or the price band is broken.
 
-import std/[json, monotimes, strutils, times, unicode, unittest]
+import std/[json, monotimes, os, strutils, times, unicode, unittest]
 import escrow/[llm, sim]
 
 proc fixture(seed: int, turns = 16, talk = true): GameConfig =
@@ -137,10 +137,11 @@ suite "scripted baselines":
       for index, seat in seats:
         let kind = if seat == 2: skHoarder else: skTrader
         let expected = scriptedAction(sim, seat, kind)
-        check decisions[index].offer == expected.offer
-        check decisions[index].signs == expected.signs
-        check decisions[index].gives.len == expected.gives.len
-        sim.applyMove(seat, decisions[index], true)
+        check decisions[index].scripted
+        check decisions[index].move.offer == expected.offer
+        check decisions[index].move.signs == expected.signs
+        check decisions[index].move.gives.len == expected.gives.len
+        sim.applyMove(seat, decisions[index].move, decisions[index].scripted)
     check sim.reason == "complete"
     check sim.turnsPlayed == 8
     ## No network waits at all.
@@ -268,3 +269,40 @@ suite "scripted baselines":
     let hushed = parseDecision(parseJson("""{"say": "hello"}"""), quiet,
       quiet.seatOfProfile[pMason])
     check hushed.say == ""
+
+  test "17. an exhausted LLM retry is recorded as scripted on the move":
+    ## The fallback has to reach the replay: phase 60 counts a seat played
+    ## by the house baseline off `move.scripted`, and a credentialed
+    ## episode whose replies keep failing is exactly the case the
+    ## registration-time flag misses. An unreachable endpoint (a refused
+    ## connection on the loopback discard port, no traffic off the box)
+    ## fails both attempt 0 and the retry in milliseconds.
+    putEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "http://127.0.0.1:1")
+    putEnv("AWS_BEARER_TOKEN_BEDROCK", "not-a-real-token")
+    let config = fixture(9, turns = 4)
+    let client = newLlmClient(config)
+    delEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+    delEnv("AWS_BEARER_TOKEN_BEDROCK")
+    ## Credentials are present, so this is NOT the disabled path test 15
+    ## covers: every seat is registered LLM-driven and stays that way.
+    check not client.disabled
+    var sim = initSim(config)
+    let seats = sim.pendingSeats()
+    check seats.len == Seats
+    let decisions = client.decideAll(sim, seats, @["", "", "", ""],
+      @[skNone, skNone, skNone, skNone])
+    check decisions.len == seats.len
+    for index, seat in seats:
+      let expected = scriptedAction(sim, seat, skTrader)
+      check decisions[index].scripted
+      check decisions[index].move.offer == expected.offer
+      check decisions[index].move.signs == expected.signs
+      check decisions[index].move.gives.len == expected.gives.len
+      sim.applyMove(seat, decisions[index].move, decisions[index].scripted)
+    var moves = 0
+    for event in sim.events:
+      if event.kind == evMove:
+        moves.inc
+        ## What the replay carries, and what phase 60 counts.
+        check event.scripted
+    check moves == Seats

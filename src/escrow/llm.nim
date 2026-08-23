@@ -46,6 +46,16 @@ type
 
   Decision* = Move
 
+  SeatDecision* = object
+    ## One seat's decision for a turn, carrying whether the scripted
+    ## baseline produced it. The flag travels WITH the decision so a seat
+    ## that exhausted its retries and fell back cannot be recorded as
+    ## having played a model's own move: the caller writes this straight
+    ## into the `move` event's `scripted` field, which is the only durable
+    ## record of a fallback.
+    move*: Decision
+    scripted*: bool
+
   SignPick = tuple[gain: int, index: int]
 
   LlmTransport = enum
@@ -638,18 +648,21 @@ proc decideAll*(
   seats: seq[int],
   prompts: seq[string],
   scripted: seq[ScriptKind]
-): seq[Decision] =
-  ## One decision per seat in `seats`, in order. Never raises: any failure
-  ## falls back to the scripted `trader` baseline so the episode always
+): seq[SeatDecision] =
+  ## One decision per seat in `seats`, in order, each tagged with whether
+  ## the scripted baseline produced it. Never raises: any failure falls
+  ## back to the scripted `trader` baseline so the episode always
   ## advances. `prompts` and `scripted` are indexed by SEAT.
-  result = newSeq[Decision](seats.len)
+  result = newSeq[SeatDecision](seats.len)
   var open: seq[int]     ## indexes into `seats` still undecided
   var hints = newSeq[string](seats.len)
   for index, seat in seats:
     let kind = scripted[seat]
     if kind != skNone or client.disabled:
-      result[index] = scriptedAction(sim, seat,
-        (if kind == skNone: skTrader else: kind))
+      result[index] = SeatDecision(
+        move: scriptedAction(sim, seat,
+          (if kind == skNone: skTrader else: kind)),
+        scripted: true)
     else:
       open.add(index)
   for attempt in 0 .. 1:
@@ -681,7 +694,7 @@ proc decideAll*(
         let problem = sim.validateMove(seat, decision)
         if problem.len > 0:
           raise newException(EscrowError, problem)
-        result[index] = decision
+        result[index] = SeatDecision(move: decision, scripted: false)
       except CatchableError as error:
         echo "escrow llm: seat ", seat, " attempt ", attempt, " failed: ",
           error.msg
@@ -691,4 +704,5 @@ proc decideAll*(
   for index in open:
     let seat = seats[index]
     echo "escrow llm: seat ", seat, " falling back to the trader baseline"
-    result[index] = scriptedAction(sim, seat, skTrader)
+    result[index] = SeatDecision(
+      move: scriptedAction(sim, seat, skTrader), scripted: true)

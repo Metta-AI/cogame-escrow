@@ -315,8 +315,11 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
       withLock stateLock:
         for index, seat in seats:
-          let decision = decisions[index]
-          let wasScripted = scripted[seat] != skNone or client.disabled
+          let decision = decisions[index].move
+          ## Not the registration state: `decideAll` reports the baseline
+          ## it actually played, including a seat whose LLM attempts both
+          ## failed, so the replay's `scripted` flag counts every fallback.
+          let wasScripted = decisions[index].scripted
           echo "escrow: turn ", state.sim.turn, " ", state.sim.names[seat],
             " (", state.sim.profileName(seat), ") gives ",
             decision.gives.len, " signs ", decision.signs.len,
