@@ -14,7 +14,7 @@
 ##     --run /bin/escrow-player --secret-env PLAYER_PROMPT="<your strategy>"
 
 import
-  std/[json, options, os, strutils],
+  std/[json, options, os, strutils, times],
   whisky
 
 const DefaultPrompt = """
@@ -32,6 +32,15 @@ sale. Keep a note of who is short of what and when their contracts settle.
 Convert every leftover good into hearts before the horizon; goods score
 nothing.
 """
+
+const
+  ## No read blocks for longer than this; the loop simply re-arms.
+  FrameTimeoutMs = 5_000
+  ## ...but a player that has heard NOTHING for this long stops waiting.
+  ## The server broadcasts on every turn and a turn is itself bounded (at
+  ## most 2 * llmTimeoutSeconds + 5 = 125 s by default), so this much
+  ## silence means the game is gone, not slow.
+  IdleTimeoutSeconds = 300.0
 
 when isMainModule:
   let url = getEnv("COWORLD_PLAYER_WS_URL")
@@ -51,11 +60,23 @@ when isMainModule:
   echo "escrow player: prompt delivered (", prompt.len, " chars",
     (if scripted.len > 0: ", scripted " & scripted else: ""), ")"
 
+  var lastFrame = epochTime()
   while true:
-    let received = socket.receiveMessage()
-    if received.isNone:
-      echo "escrow player: connection closed, exiting"
+    var received: Option[Message]
+    try:
+      received = socket.receiveMessage(FrameTimeoutMs)
+    except CatchableError as error:
+      ## whisky RAISES on a closed socket; `none` means the read timed
+      ## out. Either way the wait is bounded.
+      echo "escrow player: connection closed, exiting (", error.msg, ")"
       break
+    if received.isNone:
+      if epochTime() - lastFrame > IdleTimeoutSeconds:
+        echo "escrow player: no frame in ", int(IdleTimeoutSeconds),
+          "s, exiting"
+        break
+      continue
+    lastFrame = epochTime()
     let message = received.get()
     if message.kind != TextMessage:
       continue
