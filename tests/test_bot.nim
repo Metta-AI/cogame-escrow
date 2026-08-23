@@ -446,3 +446,84 @@ suite "scripted baselines":
         if event.scripted: inc scriptedMoves else: inc modelMoves
     check scriptedMoves == 1
     check modelMoves == Seats - 1
+
+  test "19. the turn view precomputes the sign decision":
+    ## 22 of round 9's 35 rejected replies were "C<n> is not addressed to
+    ## you": the model read the board and signed somebody else's contract.
+    ## Whether an id is signable is not a judgement call, so the
+    ## observation answers it — and the answer has to agree with the
+    ## validator exactly, id by id, or the list is worse than useless.
+    var sim = initSim(fixture(5, turns = 12))
+    let mason = sim.seatOfProfile[pMason]
+    let farmer = sim.seatOfProfile[pFarmer]
+    let forester = sim.seatOfProfile[pForester]
+    let factor = sim.seatOfProfile[pFactor]
+
+    proc offerText(sim: Sim, target: int, lock, ask: string): string =
+      "OFFER " & sim.names[target] & "\nLOCK " & lock & "\nASK " & ask &
+        "\nDUE 2\nIF ALWAYS\nTHEN SWAP\nELSE KEEP"
+
+    ## Turn 0: one offer the Farmer can pay, one it cannot, one addressed
+    ## to another cog entirely, and one the Farmer posts itself.
+    var moves: array[Seats, Move]
+    moves[mason] = Move(offer: sim.offerText(farmer, "1 ORE", "1 GRAIN"))
+    moves[forester] = Move(offer: sim.offerText(farmer, "1 TIMBER", "99 ORE"))
+    moves[factor] = Move(offer: sim.offerText(mason, "1 ORE", "1 TIMBER"))
+    moves[farmer] = Move(offer: sim.offerText(factor, "1 GRAIN", "1 ORE"))
+    for seat in sim.pendingSeats():
+      sim.applyMove(seat, moves[seat], false)
+    check sim.turn == 1
+    check sim.contracts.len == 4
+
+    proc idOf(sim: Sim, proposer, acceptor: int): string =
+      for contract in sim.contracts:
+        if contract.proposer == proposer and contract.acceptor == acceptor:
+          return contract.id
+      ""
+    let affordable = sim.idOf(mason, farmer)
+    let tooDear = sim.idOf(forester, farmer)
+    let elsewhere = sim.idOf(factor, mason)
+    let ours = sim.idOf(farmer, factor)
+    for id in [affordable, tooDear, elsewhere, ours]:
+      check id.len > 0
+
+    let listed = sim.signableBlock(farmer)
+    proc entryFor(text: string, id: string): string =
+      for line in text.splitLines():
+        if line.strip().startsWith(id & " from "):
+          return line.strip()
+      ""
+
+    ## List membership IS legality: for every contract on the board, an
+    ## AFFORDABLE entry appears exactly when the strict validator would
+    ## accept a SIGN of that id.
+    for contract in sim.contracts:
+      let entry = listed.entryFor(contract.id)
+      let offered = entry.len > 0 and entry.endsWith("— AFFORDABLE")
+      check offered == (sim.validateMove(farmer, Move(signs: @[contract.id])) == "")
+
+    check listed.entryFor(affordable).endsWith("— AFFORDABLE")
+    check "NOT AFFORDABLE" in listed.entryFor(tooDear)
+    check "99 ORE" in listed.entryFor(tooDear)
+    ## Neither another cog's contract nor our own is offered as signable.
+    check listed.entryFor(elsewhere) == ""
+    check listed.entryFor(ours) == ""
+    check "SIGNABLE NOW" in listed
+
+    ## Our own open offer is named as ours, and the whole turn view carries
+    ## all three precomputed sections.
+    let open = sim.openOffersLine(farmer)
+    check ours in open
+    check affordable notin open
+    let view = sim.userPrompt(farmer, "")
+    check listed in view
+    check open in view
+    check sim.spendableLine(farmer) in view
+    for good in Good:
+      check ($good & " " & $sim.seats[farmer].stock[good]) in
+        sim.spendableLine(farmer)
+
+    ## With nothing addressed to it, the list says so out loud rather than
+    ## going missing.
+    let quiet = sim.signableBlock(forester)
+    check "(none this turn" in quiet

@@ -411,6 +411,61 @@ proc heardBlock(sim: Sim, seat: int): string =
   "WHAT THE FLOOR SAID LAST TURN (public, non-binding):\n" &
     (if lines.len > 0: lines.join("\n") else: "(nobody spoke)") & "\n\n"
 
+proc signableBlock*(sim: Sim, seat: int): string =
+  ## The sign decision, precomputed. An id is on this list exactly when
+  ## `sim.validateMove` would accept a SIGN of it — same status, same
+  ## addressee, same free-stock arithmetic — and the entry says outright
+  ## whether the seat can pay the ASK. Signing an offer addressed to
+  ## somebody else was 22 of round 9's 35 rejected replies, and it is not
+  ## a judgement call: it is a lookup the observation can do for the model.
+  var lines: seq[string]
+  for contract in sim.contracts:
+    if contract.status != csOffered or contract.acceptor != seat:
+      continue
+    if contract.postedTurn != sim.turn - 1:
+      continue
+    var short: seq[string]
+    for good in Good:
+      if contract.ask[good] > sim.seats[seat].stock[good]:
+        short.add("it asks " & $contract.ask[good] & " " & $good &
+          " and you hold " & $sim.seats[seat].stock[good] & " free")
+    lines.add("  " & contract.id & " from " & sim.names[contract.proposer] &
+      ": you pay " & renderBundle(contract.ask) & ", " &
+      sim.names[contract.proposer] & " has locked " &
+      renderBundle(contract.lock) & ", IF " &
+      renderCondition(sim, contract.cond) & " THEN " & $contract.thenPay &
+      " ELSE " & $contract.elsePay & ", due turn " & $contract.due & " — " &
+      (if short.len == 0: "AFFORDABLE"
+       else: "NOT AFFORDABLE (" & short.join("; ") & ")"))
+  result = "SIGNABLE NOW (offers addressed to YOU, posted last turn — you " &
+    "may SIGN only ids from this list, exactly as written here; every " &
+    "other contract on the board belongs to other cogs and signing one is " &
+    "rejected):\n"
+  if lines.len == 0:
+    result.add("  (none this turn — leave \"sign\" empty)\n")
+  else:
+    result.add(lines.join("\n") & "\n")
+
+proc openOffersLine*(sim: Sim, seat: int): string =
+  ## The other half of the mistake: your own offer is on the board with
+  ## your alias on it, and you cannot sign it.
+  var mine: seq[string]
+  for contract in sim.contracts:
+    if contract.status == csOffered and contract.proposer == seat:
+      mine.add(contract.id)
+  "YOUR OPEN OFFERS (posted by you — you cannot sign your own): " &
+    (if mine.len == 0: "(none)" else: mine.join(", ")) & "\n"
+
+proc spendableLine*(sim: Sim, seat: int): string =
+  ## Free stock, spelled out good by good, as the starting point of the
+  ## subtraction every legal reply has to do.
+  var parts: seq[string]
+  for good in Good:
+    parts.add($good & " " & $sim.seats[seat].stock[good])
+  "SPENDABLE THIS TURN: " & parts.join(", ") & " (this is FREE stock and " &
+    "already includes this turn's production; subtract anything you give, " &
+    "lock or pay in THIS reply before you commit to the next thing)\n"
+
 proc systemPrompt*(sim: Sim, seat: int): string =
   let profile = sim.profileOf[seat]
   result = "You are " & sim.names[seat] & ", the " &
@@ -444,6 +499,12 @@ Rules:
   "HOLDS you 6 TIMBER" clause read false.
 - An offer lives exactly one turn: posted on turn t, signable only on t+1,
   then it expires and the stake comes back.
+- Your turn view carries a SIGNABLE NOW list: the contract ids you may sign
+  this turn, already checked against the rules for you, each marked
+  AFFORDABLE or NOT AFFORDABLE. SIGN only ids from that list, exactly as
+  they are written there; if it is empty, sign nothing. Every other id on
+  the board is addressed to another cog or was posted by you, and signing
+  it is rejected.
 
 THE CONTRACT LANGUAGE - exactly seven lines, in this order, at most """ &
     $MaxOfferChars & """ characters:
@@ -475,6 +536,8 @@ WORKED EXAMPLES (one statement per line in your reply, separated by \n):
   An insurance clause - if Ratchet is still short of grain at turn 11, the escrow is mine:
     OFFER Ratchet / LOCK 6 HEARTS / ASK 6 HEARTS / DUE 11 / IF NOT HOLDS Ratchet 4 GRAIN / THEN PROPOSER / ELSE KEEP
   (The "/" above is presentation only. Your `offer` string uses real newlines.)
+  Your `offer` string STARTS with the OFFER line: never an alias, a heading
+  or any other text before it, and nothing at all after the ELSE line.
 """)
   if sim.config.talk:
     result.add("- You may SAY one short public message (max " & $MaxSayLen &
@@ -506,9 +569,12 @@ proc userPrompt*(sim: Sim, seat: int, prompt: string): string =
     $state.stock[gHearts] & " hearts. YOUR ESCROWED STOCK: " &
     goodsLine(state.escrowed) & ", " & $state.escrowed[gHearts] &
     " hearts (unusable until settlement).\n")
-  result.add("Commissions filled so far: " & $state.fills & ".\n\n")
+  result.add("Commissions filled so far: " & $state.fills & ".\n")
+  result.add(sim.spendableLine(seat) & "\n")
   result.add("THE FLOOR:\n" & sim.floorTable() & "\n\n")
   result.add("THE ESCROW BOARD:\n" & sim.escrowBoard() & "\n\n")
+  result.add(sim.signableBlock(seat))
+  result.add(sim.openOffersLine(seat) & "\n")
   result.add("RECENT LEDGER:\n" & sim.ledger() & "\n\n")
   result.add(sim.heardBlock(seat))
   result.add("YOUR NOTES FROM EARLIER TURNS:\n" &
