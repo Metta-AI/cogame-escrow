@@ -230,7 +230,8 @@
         },
         "reason": {
           "description": "How the episode ended: complete (all turns played) or deadline (episode clock; scores use the turns played, after the same horizon closure).",
-          "type": "string"
+          "type": "string",
+          "enum": ["complete", "deadline"]
         }
       }
     },
