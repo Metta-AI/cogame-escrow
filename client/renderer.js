@@ -295,17 +295,21 @@
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "alphabetic";
-    ctx.font = "600 " + Math.round(13 * scale) +
+    // The alias and the heart count are the two things a booth must never
+    // lose: they keep a floor size so the scene stays legible at 360px.
+    var nameSize = Math.max(12, 13 * scale);
+    var heartSize = Math.max(16, 18 * scale);
+    ctx.font = "600 " + Math.round(nameSize) +
       "px 'rajdhani', system-ui, sans-serif";
     ctx.fillStyle = PAPER;
     ctx.shadowColor = "rgba(0,0,0,0.8)";
     ctx.shadowBlur = 4;
-    var nameY = cogY + size * 0.58 + 12 * scale;
+    var nameY = cogY + size * 0.58 + nameSize;
     ctx.fillText(ellipsize(ctx, seat.name || "", box.w * 0.94), box.cx, nameY);
-    ctx.font = "700 " + Math.round(18 * scale) +
+    ctx.font = "700 " + Math.round(heartSize) +
       "px 'rajdhani', system-ui, sans-serif";
     ctx.fillStyle = AMBER;
-    ctx.fillText((seat.hearts || 0) + " ♥", box.cx, nameY + 19 * scale);
+    ctx.fillText((seat.hearts || 0) + " ♥", box.cx, nameY + heartSize + 3);
     ctx.restore();
 
     // Commission fill pop: "+20 ♥" rising over the booth.
@@ -326,8 +330,8 @@
 
     // Stock: one crate cluster per good, plus the escrowed pile behind a
     // padlock. Production/commission tags go at narrow widths.
-    var stockTop = nameY + 26 * scale;
-    var rowH = Math.max(14, Math.min(20 * scale, (box.y + box.h - stockTop) / 3));
+    var stockTop = nameY + heartSize + 12;
+    var rowH = Math.max(15, Math.min(22, (box.y + box.h - stockTop) / 3));
     var stock = seat.stock || {};
     var escrowed = seat.escrowed || {};
     for (var g = 0; g < GOODS.length; g++) {
@@ -450,12 +454,12 @@
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    ctx.font = "700 " + Math.round(11 * scale) +
+    ctx.font = "700 " + Math.round(Math.max(10, 11 * scale)) +
       "px 'rajdhani', system-ui, sans-serif";
     ctx.fillStyle = PAPER_DIM;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillText("ESCROW BOARD", board.x + board.w / 2, board.y + 5 * scale);
+    ctx.fillText("ESCROW BOARD", board.x + board.w / 2, board.y + 5);
     ctx.restore();
 
     // Soonest due first, so the scroll about to fire is the one on top.
@@ -466,8 +470,8 @@
       return String(a.id).localeCompare(String(b.id));
     });
 
-    var top = board.y + 20 * scale;
-    var listH = board.h - 26 * scale;
+    var top = board.y + Math.max(19, 20 * scale);
+    var listH = board.h - Math.max(25, 26 * scale);
     // At 360px the board collapses to a single stack: only the soonest-due
     // scroll is expanded, with a count badge for the rest.
     var maxScrolls = L.compact ? 1 : Math.max(1,
@@ -478,7 +482,7 @@
 
     if (!sorted.length) {
       ctx.save();
-      ctx.font = "600 " + Math.round(11 * scale) +
+      ctx.font = "600 " + Math.round(Math.max(10, 11 * scale)) +
         "px 'rajdhani', system-ui, sans-serif";
       ctx.fillStyle = GHOST;
       ctx.textAlign = "center";
@@ -541,13 +545,14 @@
     ctx.fillStyle = INK;
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.font = "700 " + Math.round(11 * scale) +
+    ctx.font = "700 " + Math.round(Math.max(11, 11 * scale)) +
       "px 'rajdhani', system-ui, sans-serif";
     ctx.fillText(contract.id, x + 22 * scale, y + 3 * scale);
 
     // Countdown seal: wax when signed, an open ring when merely offered.
-    var seal = "DUE IN " + Math.max(0, contract.turnsLeft || 0);
-    ctx.font = "700 " + Math.round(9 * scale) +
+    var left = contract.turnsLeft || 0;
+    var seal = left > 0 ? "DUE IN " + left : "DUE NOW";
+    ctx.font = "700 " + Math.round(Math.max(9, 9 * scale)) +
       "px 'rajdhani', system-ui, sans-serif";
     ctx.textAlign = "right";
     var sw = ctx.measureText(seal).width + 8 * scale;
@@ -563,7 +568,7 @@
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.fillStyle = INK;
-    ctx.font = "600 " + Math.round(10 * scale) +
+    ctx.font = "600 " + Math.round(Math.max(10, 10 * scale)) +
       "px 'rajdhani', system-ui, sans-serif";
     var line = bundleText(contract.lock) + "  ⇄  " + bundleText(contract.ask);
     ctx.fillText(ellipsize(ctx, line, w - 8 * scale), x + 5 * scale,

@@ -17,7 +17,10 @@
 ## Pure: no IO, no LLM. The server, the tests and the wasm replay viewer
 ## all parse with this module.
 
-import std/[strutils, unicode], types
+# Only runeLen is taken from unicode: a bare `import unicode` alongside
+# strutils makes every splitWhitespace call ambiguous.
+import std/strutils, types
+from std/unicode import runeLen
 
 export types
 

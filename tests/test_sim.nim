@@ -114,32 +114,33 @@ suite "production and commissions":
     check sim.seats[factor].stock == [gOre: 5, gGrain: 5, gTimber: 5,
       gHearts: 20]
     sim.passAll()
-    ## Everyone fills the cap of two copies on turn 0.
-    check sim.seats[mason].stock == [gOre: 9, gGrain: 0, gTimber: 0,
-      gHearts: 40]
-    check sim.seats[farmer].stock == [gOre: 0, gGrain: 9, gTimber: 0,
-      gHearts: 40]
-    check sim.seats[forester].stock == [gOre: 0, gGrain: 0, gTimber: 9,
-      gHearts: 40]
-    check sim.seats[factor].stock == [gOre: 1, gGrain: 1, gTimber: 1,
-      gHearts: 44]
+    ## Everyone fills the cap of two copies on turn 0 (the Mason spends
+    ## 4 grain + 4 timber for 20 hearts and is left with a useless pile of
+    ## ore), and turn 1 has already produced by the time we look.
+    check sim.turn == 1
     for seat in 0 ..< Seats:
       check sim.seats[seat].fills == 2
     check sim.heartsMinted() == 84
-    ## Turn 1: the three specialists are one unit short of a single copy,
-    ## and there is no such thing as a partial fill.
-    check sim.turn == 1
     check sim.seats[mason].stock == [gOre: 15, gGrain: 1, gTimber: 1,
       gHearts: 40]
+    check sim.seats[farmer].stock == [gOre: 1, gGrain: 15, gTimber: 1,
+      gHearts: 40]
+    check sim.seats[forester].stock == [gOre: 1, gGrain: 1, gTimber: 15,
+      gHearts: 40]
+    check sim.seats[factor].stock == [gOre: 3, gGrain: 3, gTimber: 3,
+      gHearts: 44]
     sim.passAll()
+    ## Turn 1: each specialist is one unit short of even a single copy, and
+    ## there is no such thing as a partial fill.
+    check sim.turn == 2
     check sim.seats[mason].fills == 2
     check sim.seats[farmer].fills == 2
     check sim.seats[forester].fills == 2
-    check sim.seats[mason].stock == [gOre: 15, gGrain: 1, gTimber: 1,
+    check sim.seats[mason].stock == [gOre: 21, gGrain: 2, gTimber: 2,
       gHearts: 40]
     ## Only the Factor, which produces every good it consumes, keeps going.
     check sim.seats[factor].fills == 3
-    check sim.seats[factor].stock == [gOre: 1, gGrain: 1, gTimber: 1,
+    check sim.seats[factor].stock == [gOre: 3, gGrain: 3, gTimber: 3,
       gHearts: 56]
     check sim.heartsMinted() == 96
 
@@ -166,7 +167,7 @@ suite "the contract language":
         " 4 TIMBER", "SWAP", "PROPOSER"),
       sim.offerText(you, "1 ORE", "1 GRAIN", "3", "NOT PAID " &
         sim.names[me] & " 4 ORE", "SWAP", "PROPOSER"),
-      ## Lower case is understood; the board still reads upper case.
+      # Lower case is understood; the board still reads upper case.
       "offer " & them.toLowerAscii() & "\nlock 2 ore\nask 5 hearts\n" &
         "due 4\nif always\nthen swap\nelse keep"
     ]:
@@ -330,8 +331,9 @@ suite "escrow mechanics":
       "1", "ALWAYS", "SWAP", "KEEP"))
     locked.moveAll(moves)
     check locked.seats[factor].escrowed[gOre] == 4
-    check locked.seats[factor].stock[gOre] == 1
     check locked.seats[factor].fills == 0
+    ## 5 ore minus the 4 it locked, plus turn 1's production of 2.
+    check locked.seats[factor].stock[gOre] == 3
 
   test "5c. an unaffordable sign leaves the contract offered and moves nothing":
     var sim = initSim(fixtureConfig(turns = 8, seed = 5))
@@ -679,8 +681,9 @@ suite "replay":
     var moves: array[Seats, Move]
     moves[mason] = Move(offer: offer, say: say, notes: notes)
     sim.moveAll(moves)
-    check sim.says[mason].runeLen == MaxSayLen
-    check sim.says[mason].validateUtf8() == -1
+    ## The turn has resolved, so last turn's says now sit in `heard`.
+    check sim.heard[mason].runeLen == MaxSayLen
+    check sim.heard[mason].validateUtf8() == -1
     check sim.notes[mason].runeLen == MaxNotesLen
     check sim.notes[mason].validateUtf8() == -1
     ## A truncated contract fails the parser, which is a refusal, not a
