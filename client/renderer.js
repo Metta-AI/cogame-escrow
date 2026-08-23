@@ -820,6 +820,15 @@
           name(event.seat) + " fails to give" +
             (event.text ? " (" + event.text + ")" : "");
       case "reject":
+        // Two different refusals share this event kind: a contract draft the
+        // parser threw out, and a move that carried more gives or signings
+        // than a turn allows. The second is not a draft and its reason code
+        // is an internal token, so it gets its own prose line.
+        var overCap = /^over_cap:\s*/.exec(event.text || "");
+        if (overCap) {
+          return name(event.seat) + " tried more actions than one turn " +
+            "allows — " + event.text.slice(overCap[0].length);
+        }
         return name(event.seat) + "'s draft was refused — " +
           (event.text || "invalid contract");
       case "expire":
