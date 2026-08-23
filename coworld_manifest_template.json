@@ -1,0 +1,431 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
+  "tags": [
+    "contracts",
+    "mechanism-design",
+    "mixed-motive",
+    "llm-driven",
+    "turn-based",
+    "four-player",
+    "economics",
+    "negotiation"
+  ],
+  "game": {
+    "name": "escrow",
+    "replay_viewer": {
+      "bundle": "static-replay-viewer"
+    },
+    "description": "Escrow: binding contracts as a coworld, for four LLM-piloted cogs. A trading floor with three goods (ORE, GRAIN, TIMBER), one currency (HEARTS), and private comparative advantage: each seat is dealt one of four profiles - Mason, Farmer, Forester, Factor (the deal is drawn from the seed) - that produces a lopsided bundle every turn and pays 10 or 12 hearts for a commission made of the goods it does NOT produce. Filling commissions is the only source of new hearts; everything else is a transfer. The whole action space is a tiny contract DSL the game itself executes: OFFER <cog> / LOCK <bundle> / ASK <bundle> / DUE <turn> / IF <ALWAYS | [NOT] HOLDS <cog> <n> <good> | [NOT] PAID <cog> <n> <good>> / THEN <payout> / ELSE <payout>, with payouts SWAP, KEEP, PROPOSER or ACCEPTOR. BREACH IS IMPOSSIBLE because contracts are pre-funded: posting an offer moves the proposer's LOCK bundle into escrow, signing moves the acceptor's ASK bundle in, and settlement only redistributes what is already locked - non-performance is the ELSE branch firing, not a refusal to pay. Escrowed stock is visible but unusable: it cannot be given away, cannot fill a commission, and does not count toward a HOLDS condition, which is the engine of the loophole game. The floor is open outcry - every profile, stock and live contract is public - so the skill is drafting, pricing, and reading the other side's ELSE branch. Most hearts at the horizon wins; leftover goods are worth nothing. The game is LLM-driven: every turn the server sends each seat's policy prompt plus the floor, the escrow board, the ledger and its private notes to Claude (one parallel batch per turn), so A POLICY IS JUST A PROMPT - build one by reusing the published player runnable and setting the PLAYER_PROMPT environment variable to your strategy. Two scripted baselines (trader and hoarder) play any seat that registers as scripted - and every seat when no LLM credentials are available, so episodes always complete.",
+    "owner": "daveey@gmail.com",
+    "runnable": {
+      "type": "game",
+      "image": "{{ESCROW_IMAGE}}",
+      "run": [
+        "/bin/escrow"
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY_URI": "secret://coworld/escrow/anthropic_api_key"
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-escrow/tree/main"
+    },
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "players"
+      ],
+      "properties": {
+        "tokens": {
+          "description": "One connection token per player slot, indexed by slot.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "players": {
+          "description": "One player display-name object per seat, indexed by slot.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "num_agents": {
+          "description": "Seat count; injected by the commissioner. Escrow is a four-player game.",
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 4
+        },
+        "seed": {
+          "description": "Pins the seat-to-profile deal and the seat aliases. Omit for a fresh random seed per episode.",
+          "type": "integer"
+        },
+        "turns": {
+          "description": "Decision turns in the episode. Every seat decides every turn; the turn resolves after the fourth decision.",
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 40,
+          "default": 16
+        },
+        "talk": {
+          "description": "Whether seats may broadcast one short public message a turn to the whole floor (non-binding free text).",
+          "type": "boolean",
+          "default": true
+        },
+        "episodeTimeoutSeconds": {
+          "description": "Wall-clock the game assumes the platform allows an episode when COWORLD_TIMEOUT_SECONDS is not in its environment; play stops between turns at 60% of it so results and the replay always land.",
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 6000,
+          "default": 1200
+        },
+        "turnDelayMs": {
+          "description": "Spectator pacing delay between turns.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "default": 400
+        },
+        "model": {
+          "description": "Claude model that drives every seat.",
+          "type": "string",
+          "default": "claude-sonnet-5"
+        },
+        "maxOutputTokens": {
+          "description": "Reply budget per seat per turn. A 240-character contract plus 600 characters of notes needs headroom; too tight and Haiku stops at max_tokens before the JSON closes.",
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 2000,
+          "default": 1100
+        },
+        "llmTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300,
+          "default": 60
+        },
+        "player_connect_timeout_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 180
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "scores",
+        "hearts",
+        "fills",
+        "signed",
+        "forfeits",
+        "profiles",
+        "turns",
+        "maxTurns",
+        "heartsMinted",
+        "reason"
+      ],
+      "properties": {
+        "names": {
+          "description": "Policy display names, indexed by slot. Seats trade under anonymous cog aliases in-game; results attribute by policy name.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "description": "The seat's free hearts after the horizon closure (higher is better). Identical to hearts.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "hearts": {
+          "description": "The seat's free heart balance at the horizon.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "fills": {
+          "description": "Commission copies the seat filled over the episode.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "signed": {
+          "description": "Contracts the seat was party to that reached signed status.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "forfeits": {
+          "description": "Settled contracts where the payout sent BOTH escrows to the other party.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "profiles": {
+          "description": "The profile each seat traded under: Mason, Farmer, Forester or Factor.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        },
+        "turns": {
+          "description": "Turns actually played (decisions resolved).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxTurns": {
+          "description": "The episode's turn count after budget fitting.",
+          "type": "integer",
+          "minimum": 4
+        },
+        "heartsMinted": {
+          "description": "Hearts created by commission fills over the episode. Every other heart movement is a transfer between seats and is zero-sum.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "description": "How the episode ended: complete (all turns played) or deadline (episode clock; scores use the turns played, after the same horizon closure).",
+          "type": "string"
+        }
+      }
+    },
+    "protocols": {
+      "player": {
+        "type": "text",
+        "value": "escrow.player.v1 - JSON text frames over the websocket named by COWORLD_PLAYER_WS_URL (already carrying ?slot=N&token=T). An Escrow policy is a prompt: the player container's only job is to deliver it; the game server makes every decision by sending that prompt plus the seat's profile, the whole public floor, the escrow board, the recent ledger and its private notes to Claude once a turn, as ONE parallel batch across all four seats. game->player frames: {\"type\":\"welcome\",\"protocol\":\"escrow.player.v1\",\"slot\":N,\"name\":str,\"profile\":str,\"turns\":int} on connect; {\"type\":\"state\",\"slot\":N,\"name\":str,\"seat\":{profile,score,hearts,stock{ORE,GRAIN,TIMBER,HEARTS},escrowed{...},production,commission,commissionPay,fills},\"turn\":int,\"turns\":int,\"turnsPlayed\":int,\"board\":[{id,proposer,acceptor,status,lock,ask,due,turnsLeft,cond,then,else,dsl}],\"started\":bool,\"done\":bool,\"reason\":str} after every event - nothing is redacted because nothing is secret except other seats' private notes, which never reach a player socket; {\"type\":\"final\",\"done\":true,\"slot\":N,\"scores\":[...],\"hearts\":[...],\"fills\":[...],\"profiles\":[...],\"names\":[aliases],\"turns\":int,\"reason\":str} at episode end, after which the player should exit. player->game frames: {\"type\":\"prompt\",\"prompt\":str,\"scripted\":str} - the prompt (max 4000 chars, truncated on rune boundaries) is the policy, sent right after connecting (and again after welcome); scripted \"trader\" (or \"1\") plays the built-in trading baseline for that seat, \"hoarder\" the autarky foil, \"\" means LLM-driven. The reference player reads PLAYER_PROMPT and PLAYER_SCRIPTED from its environment. The model answers with {\"give\":[{\"to\":alias,\"n\":1-99,\"good\":ORE|GRAIN|TIMBER|HEARTS}] (max 2), \"offer\":\"<the seven-line contract DSL>\" (max 240 chars), \"sign\":[\"C3\"] (max 2), \"say\":str (max 160), \"notes\":str (max 600)}; every field is optional and {} means pass."
+      },
+      "global": {
+        "type": "text",
+        "value": "Global spectators connect a websocket to /global and receive the full snapshot as JSON after every event: {\"type\":\"state\",\"game\":\"escrow\",\"seats\":[{name,profile,score,hearts,stock{ORE,GRAIN,TIMBER,HEARTS},escrowed{...},production,commission,commissionPay,fills,signed,forfeits,say,heard[{seat,say}],notes,pending} x4 by seat],\"board\":[{id,proposer,acceptor,status,lock,ask,due,turnsLeft,cond,then,else,dsl}],\"recent\":[{id,turn,held,branch,payout,cond,transfers[{to,n,good}]}],\"hearts\":[4 heart balances],\"turn\":int,\"turns\":int,\"turnsPlayed\":int,\"phase\":moves|done,\"gameDone\":bool,\"reason\":str,\"policyNames\":[...],\"events\":[{kind:start|turn|move|offer|sign|give|reject|expire|settle|fill|end,...}],\"started\":bool,\"done\":bool,\"connected\":[bool]}. The events array is append-only and carries the complete transcript: move events are ground truth and everything else is derived by the rules and re-derived on replay. Seats trade under anonymous cog aliases; policyNames rides alongside for the SPECTATOR side only. The browser page at /client/global renders the trading floor and the escrow board; /client/player shows one seat's view; /client/replay plays a recorded episode; and the static replay-viewer bundle renders replays hosted by the platform at index.html?replay=<url>, re-deriving every frame in the browser from the replay bytes with the same sim the server runs."
+      }
+    },
+    "docs": {
+      "readme": {
+        "type": "text",
+        "value": "Escrow is a trading floor for four LLM-piloted cogs with three goods (ore, grain, timber), one currency (hearts), and private comparative advantage: each seat is dealt a profile - Mason, Farmer, Forester or Factor - that produces a lopsided bundle every turn and pays 10 or 12 hearts for a commission made of the goods it does not produce, so your own bulk good is worthless to you and exactly what somebody else needs. The only action space that matters is a tiny contract language the game itself executes: OFFER / LOCK / ASK / DUE / IF / THEN / ELSE, with conditions ALWAYS, HOLDS and PAID and payouts SWAP, KEEP, PROPOSER or ACCEPTOR. Breach is impossible because every contract is pre-funded - the proposer's stake goes into escrow when the offer is posted and the acceptor's when it signs, and settlement only redistributes what is already locked - so the skill is drafting, pricing, and spotting loopholes in other people's clauses (escrowed stock does not count toward a HOLDS condition, so locking your own stock elsewhere can make someone's clause read false). The floor is open outcry: nothing is hidden but private notes. Most hearts at the horizon wins and leftover goods score nothing. A policy is just a prompt: field one by reusing the published escrow-player runnable with the PLAYER_PROMPT environment variable set to your strategy. With no LLM credentials (or for seats that register scripted) the server plays the trader or hoarder baseline so episodes always complete."
+      },
+      "pages": [
+        {
+          "id": "rules.md",
+          "title": "rules.md",
+          "content": {
+            "type": "text",
+            "value": "# Escrow rules\n\n## The floor\n\nFour seats, four profiles, dealt as a seeded permutation so no slot is structurally stuck with one role. Seats trade under anonymous cog aliases (Sprocket, Gizmo, Ratchet, Widget, ...) drawn from the same seed; policy display names never enter a prompt.\n\n| Profile | produces per turn (ore/grain/timber) | commission (consumes -> pays) |\n|---|---|---|\n| Mason | 6 / 1 / 1 | 2 GRAIN + 2 TIMBER -> 10 hearts |\n| Farmer | 1 / 6 / 1 | 2 TIMBER + 2 ORE -> 10 hearts |\n| Forester | 1 / 1 / 6 | 2 ORE + 2 GRAIN -> 10 hearts |\n| Factor | 2 / 2 / 2 | 2 ORE + 2 GRAIN + 2 TIMBER -> 12 hearts |\n\nProduction and commission-filling are automatic - no seat decides them. A seat may fill at most 2 copies of its commission per turn, greedily, from free stock. **That is the only source of new hearts in the game**; every other heart movement is a transfer between seats and is zero-sum. Every seat starts turn 0 (before the first production) with 3 ore, 3 grain, 3 timber and 20 hearts.\n\nComparative advantage falls straight out of the table: under autarky a Mason fills half a commission a turn (5 hearts/turn) while a well-traded Mason fills two (20 hearts/turn, minus what it paid). The implied price band is 2.0-2.5 hearts per unit, which is what makes pricing a clause a real skill rather than a guess.\n\n## The turn\n\nDecisions within a turn are **simultaneous**: every seat sees the same public floor and answers before anyone's answer is applied. A decision is `{give (<=2), offer (<=1), sign (<=2), say, notes}`. Turn `t` resolves in exactly this order:\n\n1. **Production.** Each seat's profile yield is added to its free stock.\n2. **Observation and decision.** The post-production floor is snapshotted and every seat's decision is obtained - one parallel LLM batch, or the scripted baseline.\n3. **Signings**, in seat order, then reply order. `SIGN Cn` is legal iff `Cn` is still `offered`, was posted on turn `t-1`, is addressed to this seat, and this seat can pay the whole `ASK` bundle out of free stock. On success the ASK moves into escrow and the contract becomes `signed`; on failure nothing moves and the contract stays `offered` (and expires at step 6).\n4. **Gives**, in seat order, then reply order. A give moves 1..99 units of one good (or hearts) from the giver's free stock to another seat's free stock, immediately and with no strings. Illegal or unaffordable gives are rejected and logged; the rest of the seat's decision still applies.\n5. **Offer registration**, in seat order. The DSL is parsed and validated (see dsl.md); on success the contract is created and **the proposer's LOCK bundle moves into escrow immediately** - an offer on the board is always funded.\n6. **Expiry.** Every contract still `offered` that was posted on turn `t-1` expires and its proposer's escrow is returned. An offer therefore lives exactly one turn: posted on `t`, signable only on `t+1`.\n7. **Settlement.** Every `signed` contract with `DUE == t`, in ascending contract id: the condition is evaluated against the state as it now stands, the THEN branch is taken if true and the ELSE branch if false, and the two escrows are paid out per the branch.\n8. **Commissions.** Each seat fills up to 2 copies of its commission from free stock.\n9. **Tally.** The turn record is appended and the turn advances.\n\n## Payouts - the only four\n\n| Payout | effect |\n|---|---|\n| `SWAP` | proposer's escrow -> acceptor; acceptor's escrow -> proposer |\n| `KEEP` | each side's escrow returns to its owner |\n| `PROPOSER` | both escrows -> proposer |\n| `ACCEPTOR` | both escrows -> acceptor |\n\n**This is what \"breach is impossible\" means mechanically.** A contract never creates an obligation to hand something over later; it is pre-funded at signature. Settlement only redistributes what is already locked, so non-performance cannot be a refusal to pay - it is simply the ELSE branch firing and the escrow forfeiting. Escrowed goods and hearts are visible on the board but unusable: they cannot be given away, cannot fill a commission, and do not count toward a HOLDS condition.\n\n## Scoring\n\n`score(seat) = free hearts after the horizon closure` - an integer, higher is better. When the episode ends, for either reason, every contract still `offered` is expired (proposer refunded) and every contract still `signed` is closed as `KEEP`, so nothing is stranded. Leftover goods are worth **zero** hearts, so the last turns are a genuine scramble to convert. The league ranks by mean episode score. Results also report per seat: `hearts`, `fills`, `signed`, `forfeits` and `profiles`, plus the episode's `heartsMinted`.\n\nEnd conditions: `complete` (all `turns` turns resolved) or `deadline` (the episode clock stopped play between turns; scores use the turns actually played, after the same horizon closure). Those are the only two values of `reason`.\n\n## What is public\n\nThe floor is **open outcry**. Every seat sees, every turn: every cog's alias, profile, production vector, commission bundle and payout, free stock of each good, free hearts and escrowed totals; every live contract on the escrow board with its LOCK and ASK bundles, DUE turn, condition and both branches; contracts settled or expired in the last 3 turns with their outcomes; the last 6 turns of public events; and the message every seat sent last turn (`say` is public - all three others read it). **The only hidden information is the other seats' private notes.** There is deliberately no hidden inventory and no hidden price: this game is about commitment and clause-drafting, not concealment, and a public floor is what lets a spectator judge whether a contract was a good deal.\n\n## The meta\n\nEvery decision is made by Claude acting on a per-seat policy prompt. Prompts that count their shortfall against two commission fills, price at 2-2.5 hearts a unit, put a PAID or HOLDS condition on anything they cannot verify at signature, and read the other side's ELSE branch first tend to score. The built-in `trader` baseline barters one-for-one at a flat house price and is the partner a prompt has to beat; the `hoarder` baseline never trades at all and is the autarky floor that makes \"what is a contract worth?\" measurable."
+          }
+        },
+        {
+          "id": "dsl.md",
+          "title": "dsl.md",
+          "content": {
+            "type": "text",
+            "value": "# The Escrow contract language\n\nA contract is exactly seven lines, in this order, one statement per line, whitespace runs collapsed, the whole text at most **240 characters**. Keywords are matched case-insensitively (a model that writes `offer gizmo` is understood) and the normalized form - upper-case keywords, the cog's own alias - is what goes on the board, into the prompt and into the replay.\n\n```\nOFFER <cog>\nLOCK  <bundle>\nASK   <bundle>\nDUE   <turn>\nIF    <condition>\nTHEN  <payout>\nELSE  <payout>\n\n<cog>       := one of the four table aliases\n<bundle>    := NOTHING | <term> ( \"+\" <term> ){0,2}\n<term>      := <n> <good>            ; n an integer 1..99\n<good>      := ORE | GRAIN | TIMBER | HEARTS\n<turn>      := integer\n<condition> := ALWAYS | [NOT] HOLDS <cog> <n> <good> | [NOT] PAID <cog> <n> <good>\n<payout>    := SWAP | KEEP | PROPOSER | ACCEPTOR\n```\n\n## Condition semantics\n\nEvaluated at settlement (step 7 of the turn), against the state as of that moment - i.e. after that turn's signings, gives, offers and expiries.\n\n- `ALWAYS` - true.\n- `HOLDS <cog> <n> <good>` - that cog's **free** (unescrowed) stock of `<good>` is at least `<n>`. `HEARTS` is a legal good here.\n- `PAID <cog> <n> <good>` - `<cog>` must be one of the two parties; true iff the cumulative units of `<good>` that `<cog>` has transferred by open `give` **to the other party** since this contract was signed (including this turn's gives) is at least `<n>`.\n- `NOT` negates either atom.\n\n**The loophole, stated plainly: `HOLDS` reads FREE stock only.** Escrowed stock is invisible to it. Locking your own stock in an unrelated contract is how you make someone's `HOLDS you 6 TIMBER` clause read false - and how somebody else makes yours read false. Read every `ELSE` branch before you sign: a contract whose `ELSE` pays `PROPOSER` is a bet you are being offered, not a sale.\n\n## Validation\n\nAll of these are checked when the offer is registered (step 5). Each failure produces a `reject` event carrying the reason code, and nothing moves.\n\n| # | rule | reason code |\n|---|---|---|\n| 1 | text <= 240 chars and exactly the seven keyword lines in order | `syntax` / `too_long` |\n| 2 | `OFFER` names a table alias other than the proposer | `bad_target` |\n| 3 | each bundle is `NOTHING` or 1-3 terms, each good at most once, each n in 1..99 | `bad_bundle` |\n| 4 | `LOCK` and `ASK` are not both `NOTHING` | `bad_bundle` |\n| 5 | `turn + 1 <= DUE <= min(turn + 6, turns - 1)` | `bad_due` |\n| 6 | condition parses; every named cog is a table alias; a `PAID` cog is one of the two parties | `bad_condition` |\n| 7 | `THEN` and `ELSE` are payout keywords | `bad_payout` |\n| 8 | the proposer can pay the whole `LOCK` bundle from free stock right now | `unfunded` |\n| 9 | neither proposer nor addressee is at the cap of 4 live contracts (offered + signed, either role) | `contract_cap` |\n\nMalformed DSL is never fatal and never silent. During decision-making it makes the reply invalid, which buys the seat one retry carrying the exact reason text; if the retry also fails the seat plays the `trader` baseline for the turn.\n\n## Worked examples\n\n```\n# a funded sale, settled next turn\nOFFER Gizmo / LOCK 5 ORE / ASK 12 HEARTS / DUE 8 / IF ALWAYS / THEN SWAP / ELSE KEEP\n\n# a performance bond: Gizmo only gets my ore if it has actually shipped me timber\nOFFER Gizmo / LOCK 5 ORE / ASK 4 TIMBER / DUE 9 / IF PAID Gizmo 4 TIMBER / THEN SWAP / ELSE PROPOSER\n\n# an insurance clause: if Ratchet is still short of grain at turn 11, the escrow is mine\nOFFER Ratchet / LOCK 6 HEARTS / ASK 6 HEARTS / DUE 11 / IF NOT HOLDS Ratchet 4 GRAIN / THEN PROPOSER / ELSE KEEP\n```\n\nThe `/` is presentation only - the real text has one statement per line (`\\n` inside the JSON string)."
+          }
+        }
+      ]
+    }
+  },
+  "player": [
+    {
+      "id": "escrow-player",
+      "name": "Escrow Prompt Player",
+      "type": "player",
+      "description": "The reference Escrow policy: delivers its PLAYER_PROMPT (or a default trading-floor strategy in words) to the game and spectates until the final frame. Field your own policy by uploading this same image with a different PLAYER_PROMPT.",
+      "image": "{{ESCROW_IMAGE}}",
+      "run": [
+        "/bin/escrow-player"
+      ],
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-escrow/tree/main"
+    },
+    {
+      "id": "escrow-trader",
+      "name": "Escrow Trader Baseline",
+      "type": "player",
+      "description": "The scripted trading baseline as a fieldable policy: registers its seat as rule-based (value everything at a flat house price, sign the best-valued affordable offers addressed to it, and post one one-for-one swap of its largest surplus for its largest deficit) so the game server plays it deterministically, no LLM involved. It is also the universal fallback whenever a model reply cannot be parsed or validated.",
+      "image": "{{ESCROW_IMAGE}}",
+      "run": [
+        "/bin/escrow-player"
+      ],
+      "env": {
+        "PLAYER_SCRIPTED": "trader"
+      },
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-escrow/tree/main"
+    },
+    {
+      "id": "escrow-hoarder",
+      "name": "Escrow Hoarder Baseline",
+      "type": "player",
+      "description": "The autarky foil: produces, fills commissions, and does nothing else - no offers, no signings, no gives, no talk. It is the floor any trading policy has to beat, and it makes \"what is a contract worth?\" measurable.",
+      "image": "{{ESCROW_IMAGE}}",
+      "run": [
+        "/bin/escrow-player"
+      ],
+      "env": {
+        "PLAYER_SCRIPTED": "hoarder"
+      },
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-escrow/tree/main"
+    }
+  ],
+  "variants": [
+    {
+      "id": "standard",
+      "name": "Standard game",
+      "description": "Four cogs, one trading floor, 16 turns, open outcry talk on.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Player1"
+          },
+          {
+            "name": "Player2"
+          },
+          {
+            "name": "Player3"
+          },
+          {
+            "name": "Player4"
+          }
+        ],
+        "num_agents": 4,
+        "turns": 16,
+        "talk": true,
+        "turnDelayMs": 400,
+        "player_connect_timeout_seconds": 180
+      }
+    },
+    {
+      "id": "sprint",
+      "name": "Sprint",
+      "description": "The same floor over 8 turns: less time to build a reputation, so clauses have to carry the weight.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Player1"
+          },
+          {
+            "name": "Player2"
+          },
+          {
+            "name": "Player3"
+          },
+          {
+            "name": "Player4"
+          }
+        ],
+        "num_agents": 4,
+        "turns": 8,
+        "talk": true,
+        "turnDelayMs": 200,
+        "player_connect_timeout_seconds": 180
+      }
+    }
+  ],
+  "certification": {
+    "game_config": {
+      "players": [
+        {
+          "name": "Sprocket"
+        },
+        {
+          "name": "Gizmo"
+        },
+        {
+          "name": "Ratchet"
+        },
+        {
+          "name": "Widget"
+        }
+      ],
+      "num_agents": 4,
+      "seed": 11,
+      "turns": 6,
+      "turnDelayMs": 0,
+      "player_connect_timeout_seconds": 180
+    },
+    "players": [
+      {
+        "player_id": "escrow-player"
+      },
+      {
+        "player_id": "escrow-trader"
+      },
+      {
+        "player_id": "escrow-player"
+      },
+      {
+        "player_id": "escrow-hoarder"
+      }
+    ]
+  }
+}
