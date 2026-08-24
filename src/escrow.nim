@@ -41,6 +41,5 @@ when isMainModule:
     config = sampleEpisode(config)
     echo "escrow: seats=", config.players.len,
       " turns=", config.turns,
-      " talk=", config.talk,
-      " model=", config.model
+      " talk=", config.talk
     runGameServer(config, runtimeConfig)
