@@ -119,6 +119,26 @@ proc assertCleanLog(sim: Sim) =
       discard
 
 suite "scripted baselines":
+  test "Jev ranks only validated distinct actions":
+    let sim = initSim(fixture(7, turns = 8))
+    let choices = sim.jevChoices(0)
+    check choices.moves.len >= 2
+    check choices.criteria.len == choices.moves.len
+    for candidate in choices.moves:
+      check sim.validateMove(0, candidate) == ""
+    var probabilities = newJObject()
+    for name, description in choices.criteria.pairs:
+      discard description
+      probabilities[name] = %(if name == "0": 1.0 else: 0.0)
+    let response = %*{"answers": {"decision": {
+      "type": "choice", "choice": "0", "confidence": 0.8,
+      "probabilities": probabilities}}, "model": "test",
+      "usage": {"input_tokens": 10, "output_tokens": 5}}
+    check jevDecision(response, choices) == choices.moves[0]
+    probabilities["0"] = %0.5
+    expect EscrowError:
+      discard jevDecision(response, choices)
+
   test "13. every scripted action is legal, across seeds and mixes":
     let mixes = [
       [skTrader, skTrader, skTrader, skTrader],
@@ -188,7 +208,8 @@ suite "scripted baselines":
     while not sim.done:
       let seats = sim.pendingSeats()
       let decisions = client.decideAll(sim, seats,
-        @["be bold", "", "", ""], @[skNone, skNone, skHoarder, skNone])
+        @["be bold", "", "", ""], @[skNone, skNone, skHoarder, skNone],
+        @[false, false, false, false])
       check decisions.len == seats.len
       for index, seat in seats:
         let kind = if seat == 2: skHoarder else: skTrader
@@ -367,7 +388,7 @@ suite "scripted baselines":
     let seats = sim.pendingSeats()
     check seats.len == Seats
     let decisions = client.decideAll(sim, seats, @["", "", "", ""],
-      @[skNone, skNone, skNone, skNone])
+      @[skNone, skNone, skNone, skNone], @[false, false, false, false])
     check decisions.len == seats.len
     for index, seat in seats:
       let expected = scriptedAction(sim, seat, skTrader)
@@ -419,7 +440,7 @@ suite "scripted baselines":
     let seats = sim.pendingSeats()
     check seats.len == Seats
     let decisions = client.decideAll(sim, seats, @["", "", "", ""],
-      @[skTrader, skNone, skNone, skNone])
+      @[skTrader, skNone, skNone, skNone], @[false, false, false, false])
     stubStop = true
     joinThread(stub)
     listener.close()

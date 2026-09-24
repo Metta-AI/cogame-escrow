@@ -3,7 +3,7 @@
 ## Endpoints:
 ##   GET /healthz                    - liveness
 ##   GET /client/global              - spectator page
-##   GET /client/player              - player page (view-only; policies are prompts)
+##   GET /client/player              - player page (view-only)
 ##   GET /client/replay              - replay page (replay mode)
 ##   GET /client/renderer.js         - shared stage renderer
 ##   GET /client/chrome.css          - shared broadcast chrome
@@ -18,7 +18,8 @@
 ##                   numbers plus the public board; nothing is redacted
 ##                   because nothing is secret except other seats' notes)
 ##                   {"type":"final","scores":[...],"hearts":[...]}
-##   player -> game: {"type":"prompt","prompt":"...","scripted":"trader"}
+##   player -> game: {"type":"prompt","prompt":"...",
+##                    "scripted":"trader","jev":false}
 ##                   (max 4000 chars; scripted plays a built-in baseline
 ##                   for that seat: "trader" / "1", or "hoarder")
 
@@ -40,6 +41,7 @@ type
     config: GameConfig
     sim: Sim
     prompts: seq[string]
+    jev: seq[bool]
     scripted: seq[ScriptKind]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
@@ -286,6 +288,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var seats: seq[int]
       var prompts: seq[string]
+      var jev: seq[bool]
       var scripted: seq[ScriptKind]
       withLock stateLock:
         if state.sim.done:
@@ -304,14 +307,15 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         seats = state.sim.pendingSeats()
         simCopy = state.sim
         prompts = state.prompts
+        jev = state.jev
         scripted = state.scripted
         echo "escrow: turn ", state.sim.turn, " of ", config.turns,
           " at ", (epochTime() - gameStart).int, "s"
 
-      ## The slow part (Claude, ONE parallel batch for the turn) runs
+      ## Model requests (ONE parallel batch for the turn) run
       ## outside the lock on a snapshot; only this thread mutates the sim,
       ## so the snapshot cannot go stale.
-      let decisions = client.decideAll(simCopy, seats, prompts, scripted)
+      let decisions = client.decideAll(simCopy, seats, prompts, scripted, jev)
 
       withLock stateLock:
         for index, seat in seats:
@@ -473,6 +477,7 @@ proc websocketHandler(
             else: parseScriptKind(node.getStr())
           withLock stateLock:
             state.prompts[slot] = prompt
+            state.jev[slot] = payload{"jev"}.getBool()
             state.scripted[slot] = scripted
           echo "escrow: slot ", slot, " delivered a prompt (",
             prompt.len, " chars",
@@ -545,6 +550,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.config = config
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)
+  state.jev = newSeq[bool](config.players.len)
   state.scripted = newSeq[ScriptKind](config.players.len)
   runtimeConfigGlobal = runtimeConfig
 

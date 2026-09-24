@@ -1,4 +1,4 @@
-## Escrow player: a policy is just a prompt.
+## Escrow player: a policy is a prompt, Jev choice policy, or scripted.
 ##
 ## Connects to the game, delivers its prompt (from PLAYER_PROMPT, or a
 ## default trading-floor strategy), then idles until the final frame. All
@@ -8,6 +8,7 @@
 ## PLAYER_SCRIPTED=trader (or 1) registers the seat as the built-in trading
 ## baseline instead; PLAYER_SCRIPTED=hoarder as the autarky foil. The
 ## server plays those deterministically, no LLM.
+## PLAYER_JEV=1 asks the server to rank legal trader actions with Jev.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <escrow-image> --name my-escrow \
@@ -50,9 +51,11 @@ when isMainModule:
   if prompt.len == 0:
     prompt = DefaultPrompt
   let scripted = getEnv("PLAYER_SCRIPTED").strip()
+  let jev = getEnv("PLAYER_JEV") == "1"
 
   proc promptFrame(): string =
-    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
+    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted,
+      "jev": jev}
 
   echo "escrow player: connecting to game"
   let socket = newWebSocket(url)
