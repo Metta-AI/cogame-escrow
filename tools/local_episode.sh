@@ -56,7 +56,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 results = json.loads((path / 'results.json').read_text())
 replay = json.loads((path / 'episode.replay').read_text())
-log = (path / 'game.log').read_text()
+log = (path / 'player0.log').read_text()
 usage = [tuple(map(int, match)) for match in re.findall(
     r'input_tokens (\d+) output_tokens (\d+)', log)]
 seat0 = [event for event in replay['events']

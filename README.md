@@ -54,11 +54,11 @@ and every live contract is public, and `say` is broadcast to all three other
 cogs. The only hidden information is the other seats' private notes. This game
 is about commitment and clause-drafting, not concealment.
 
-**The game is LLM-driven.** Prompt policies ask Claude for gives, an offer,
-signings, a message, and notes. A `PLAYER_JEV=1` policy asks Jev System One
-to rank validated trader actions, including different contract sizes and
-passing. The game server sends each seat's visible floor in one parallel
-batch per turn. Player containers deliver the policy selection. Two built-in
+**The game supports prompt and action policies.** Prompt policies ask Claude
+for gives, an offer, signings, a message, and notes. A `PLAYER_JEV=1` player
+policy ranks pass and affordable signatures from its seat observation. The
+game server batches prompt calls each turn and validates every submitted
+action. Two built-in
 **scripted baselines** — `trader` (value everything at a flat house price, sign
 the best affordable offers, post one one-for-one swap of its largest surplus
 for its largest deficit) and `hoarder` (produce, fill, do nothing else) — play
@@ -158,11 +158,13 @@ uv run coworld upload-policy <escrow image> --name my-escrow \
 Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=trader` or
 `--env PLAYER_SCRIPTED=hoarder`.
 
-For a Jev policy, reuse the image with `--env PLAYER_JEV=1`. The game server
-uses the hosted Bedrock sidecar, `METTA_CAPTURE_URL` and `METTA_CAPTURE_KEY`,
-or `TYPESAFE_API_KEY`, in that order. Jev ranks only actions that pass the
-game's validator. Invalid choice replies are retried once, then fall back to
-`trader`. Jev policies do not send free-text offers, messages, or notes.
+For a Jev policy, reuse the image with `--env PLAYER_JEV=1`. The player
+container uses the hosted Bedrock sidecar, `METTA_CAPTURE_URL` and
+`METTA_CAPTURE_KEY`, or `TYPESAFE_API_KEY`, in that order. It ranks pass and
+affordable signatures from its seat-private observation. The game validates
+the selected action using its normal rules. Missing or invalid actions use
+the `trader` baseline. This pilot does not draft offers, send messages, or
+write notes.
 
 For a local paired comparison against three traders, set `TYPESAFE_API_KEY`
 and run the same seed twice:
