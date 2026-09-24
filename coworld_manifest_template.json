@@ -241,7 +241,7 @@
     "protocols": {
       "player": {
         "type": "text",
-        "value": "escrow.player.v2 - JSON text frames over the seat WebSocket. The game sends welcome, seat-private state, and final frames. A prompt or scripted player sends {\"type\":\"prompt\",\"prompt\":str,\"scripted\":str}. An external policy sends {\"type\":\"register\",\"control\":\"external\"}, receives {\"type\":\"observation\",\"id\":int,\"observation\":{seat-private state}}, and replies {\"type\":\"action\",\"id\":int,\"action\":{give,offer,sign,say,notes}}. The game validates the action with the same rules as prompt replies; a missing or invalid action uses the trader baseline. The reference player uses PLAYER_JEV=1 to rank actions inside the player container."
+        "value": "escrow.player.v2 - JSON text frames over the seat WebSocket. The game sends welcome, seat-private state, and final frames. A prompt or scripted player sends {\"type\":\"prompt\",\"prompt\":str,\"scripted\":str}. An external policy sends {\"type\":\"register\",\"control\":\"external\"}, receives {\"type\":\"observation\",\"id\":int,\"observation\":{seat-private state}}, and replies {\"type\":\"action\",\"id\":int,\"action\":{give,offer,sign,say,notes}}. The game validates the action with the same rules as prompt replies; a missing or invalid action uses the trader baseline."
       },
       "global": {
         "type": "text",
@@ -251,7 +251,7 @@
     "docs": {
       "readme": {
         "type": "text",
-        "value": "Escrow is a trading floor for four LLM-piloted cogs with three goods (ore, grain, timber), one currency (hearts), and private comparative advantage: each seat is dealt a profile - Mason, Farmer, Forester or Factor - that produces a lopsided bundle every turn and pays 10 or 12 hearts for a commission made of the goods it does not produce, so your own bulk good is worthless to you and exactly what somebody else needs. The only action space that matters is a tiny contract language the game itself executes: OFFER / LOCK / ASK / DUE / IF / THEN / ELSE, with conditions ALWAYS, HOLDS and PAID and payouts SWAP, KEEP, PROPOSER or ACCEPTOR. Breach is impossible because every contract is pre-funded - the proposer's stake goes into escrow when the offer is posted and the acceptor's when it signs, and settlement only redistributes what is already locked - so the skill is drafting, pricing, and spotting loopholes in other people's clauses (escrowed stock does not count toward a HOLDS condition, so locking your own stock elsewhere can make someone's clause read false). The floor is open outcry: nothing is hidden but private notes. Most hearts at the horizon wins and leftover goods score nothing. A policy may use a prompt, a scripted baseline, or the generic observation/action protocol. Reuse the published escrow-player runnable with PLAYER_PROMPT, PLAYER_JEV=1, or PLAYER_SCRIPTED. Without a usable model transport (or for seats that register scripted) the server plays the trader or hoarder baseline so episodes always complete."
+        "value": "Escrow is a trading floor for four LLM-piloted cogs with three goods (ore, grain, timber), one currency (hearts), and private comparative advantage: each seat is dealt a profile - Mason, Farmer, Forester or Factor - that produces a lopsided bundle every turn and pays 10 or 12 hearts for a commission made of the goods it does not produce, so your own bulk good is worthless to you and exactly what somebody else needs. The only action space that matters is a tiny contract language the game itself executes: OFFER / LOCK / ASK / DUE / IF / THEN / ELSE, with conditions ALWAYS, HOLDS and PAID and payouts SWAP, KEEP, PROPOSER or ACCEPTOR. Breach is impossible because every contract is pre-funded - the proposer's stake goes into escrow when the offer is posted and the acceptor's when it signs, and settlement only redistributes what is already locked - so the skill is drafting, pricing, and spotting loopholes in other people's clauses (escrowed stock does not count toward a HOLDS condition, so locking your own stock elsewhere can make someone's clause read false). The floor is open outcry: nothing is hidden but private notes. Most hearts at the horizon wins and leftover goods score nothing. A policy may use a prompt, a scripted baseline, or the generic observation/action protocol. The published player supports external action, legacy prompt, and scripted modes. Without a usable model transport (or for seats that register scripted) the server plays the trader or hoarder baseline so episodes always complete."
       },
       "pages": [
         {
@@ -278,7 +278,7 @@
       "id": "escrow-player",
       "name": "Escrow Prompt Player",
       "type": "player",
-      "description": "The reference Escrow policy delivers PLAYER_PROMPT to the game, or uses PLAYER_JEV=1 to rank actions from seat observations. Reuse this image with PLAYER_PROMPT, PLAYER_JEV, or PLAYER_SCRIPTED.",
+      "description": "Reference Escrow policy with external action, legacy prompt, and scripted modes.",
       "image": "{{ESCROW_IMAGE}}",
       "run": [
         "/bin/escrow-player"
