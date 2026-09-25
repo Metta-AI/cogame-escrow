@@ -160,11 +160,11 @@ Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=trader` or
 
 For a Jev policy, reuse the image with `--env PLAYER_JEV=1`. The player
 container uses the hosted Bedrock sidecar, `METTA_CAPTURE_URL` and
-`METTA_CAPTURE_KEY`, or `TYPESAFE_API_KEY`, in that order. It ranks pass and
-affordable signatures from its seat-private observation. The game validates
-the selected action using its normal rules. Missing or invalid actions use
-the `trader` baseline. This pilot does not draft offers, send messages, or
-write notes.
+`METTA_CAPTURE_KEY`, or `TYPESAFE_API_KEY`, in that order. It ranks pass,
+affordable signatures, and funded swap offers from its seat-private
+observation. The game validates the selected action using its normal rules.
+Missing or invalid actions use the `trader` baseline. This policy does not
+send messages or write notes.
 
 For a local paired comparison against three traders, set `TYPESAFE_API_KEY`
 and run the same seed twice:
