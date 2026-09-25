@@ -54,17 +54,16 @@ and every live contract is public, and `say` is broadcast to all three other
 cogs. The only hidden information is the other seats' private notes. This game
 is about commitment and clause-drafting, not concealment.
 
-**The game is LLM-driven and a policy is just a prompt.** Every turn the game
-server sends each seat's policy prompt, its booth, the whole public floor, the
-escrow board, the recent ledger and its private notes to Claude — the four
-seats as **one parallel batch**, since their decisions are simultaneous — and
-Claude answers with gives, an offer, signings, a message and new notes. Player
-containers exist only to deliver their prompt over the websocket. Two built-in
+**The game supports prompt and action policies.** Prompt policies ask Claude
+for gives, an offer, signings, a message, and notes. A `PLAYER_JEV=1` player
+policy ranks pass and affordable signatures from its seat observation. The
+game server batches prompt calls each turn and validates every submitted
+action. Two built-in
 **scripted baselines** — `trader` (value everything at a flat house price, sign
 the best affordable offers, post one one-for-one swap of its largest surplus
 for its largest deficit) and `hoarder` (produce, fill, do nothing else) — play
-any seat that registers as scripted, and every seat when no LLM credentials are
-available, so episodes (and offline certification) always complete.
+any seat that registers as scripted, and every seat without a usable model
+transport, so episodes (and offline certification) always complete.
 
 Seats play under **anonymous cog names** (Sprocket, Gizmo, …): policy display
 names never reach the agents' prompts, so nobody can meta-game "that seat is
@@ -158,3 +157,19 @@ uv run coworld upload-policy <escrow image> --name my-escrow \
 
 Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=trader` or
 `--env PLAYER_SCRIPTED=hoarder`.
+
+For a Jev policy, reuse the image with `--env PLAYER_JEV=1`. The player
+container uses the hosted Bedrock sidecar, `METTA_CAPTURE_URL` and
+`METTA_CAPTURE_KEY`, or `TYPESAFE_API_KEY`, in that order. It ranks pass,
+affordable signatures, and funded swap offers from its seat-private
+observation. The game validates the selected action using its normal rules.
+Missing or invalid actions use the `trader` baseline. This policy does not
+send messages or write notes.
+
+For a local paired comparison against three traders, set `TYPESAFE_API_KEY`
+and run the same seed twice:
+
+```bash
+bash tools/local_episode.sh trader 7 8
+bash tools/local_episode.sh jev 7 8
+```

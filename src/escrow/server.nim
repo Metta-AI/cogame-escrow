@@ -3,7 +3,7 @@
 ## Endpoints:
 ##   GET /healthz                    - liveness
 ##   GET /client/global              - spectator page
-##   GET /client/player              - player page (view-only; policies are prompts)
+##   GET /client/player              - player page (view-only)
 ##   GET /client/replay              - replay page (replay mode)
 ##   GET /client/renderer.js         - shared stage renderer
 ##   GET /client/chrome.css          - shared broadcast chrome
@@ -12,13 +12,18 @@
 ##   WS  /global                     - spectator snapshots
 ##   WS  /replay                     - replay payload (replay mode)
 ##
-## Player protocol (escrow.player.v1), all JSON text frames:
+## Player protocol (escrow.player.v2), all JSON text frames:
 ##   game -> player: {"type":"welcome","slot":N,"name":...,"profile":...}
 ##                   {"type":"state",...} after every event (the seat's own
 ##                   numbers plus the public board; nothing is redacted
 ##                   because nothing is secret except other seats' notes)
 ##                   {"type":"final","scores":[...],"hearts":[...]}
-##   player -> game: {"type":"prompt","prompt":"...","scripted":"trader"}
+##   player -> game: {"type":"prompt","prompt":"...",
+##                    "scripted":"trader"}
+##                   or {"type":"register","control":"external"}
+##   game -> external player: {"type":"observation","id":N,
+##                             "observation":{...seat state...}}
+##   external player -> game: {"type":"action","id":N,"action":{...}}
 ##                   (max 4000 chars; scripted plays a built-in baseline
 ##                   for that seat: "trader" / "1", or "hoarder")
 
@@ -40,6 +45,9 @@ type
     config: GameConfig
     sim: Sim
     prompts: seq[string]
+    external: seq[bool]
+    decisionId: int
+    pendingActions: seq[JsonNode]
     scripted: seq[ScriptKind]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
@@ -96,8 +104,7 @@ proc snapshotJson(gs: GameState): JsonNode =
 proc playerStateJson(gs: GameState, slot: int): JsonNode =
   ## The floor is open outcry, so a player frame carries the seat's own
   ## numbers AND the public board. The only thing never sent is another
-  ## seat's private notes. Decisions are server-side, so the player socket
-  ## is informational either way.
+  ## seat's private notes.
   let profile = gs.sim.profileOf[slot]
   let own = gs.sim.seats[slot]
   var stock = newJObject()
@@ -105,6 +112,19 @@ proc playerStateJson(gs: GameState, slot: int): JsonNode =
   for good in Good:
     stock[$good] = %own.stock[good]
     escrowed[$good] = %own.escrowed[good]
+  var publicSeats = newJArray()
+  for other in 0 ..< gs.config.players.len:
+    let otherProfile = gs.sim.profileOf[other]
+    publicSeats.add(%*{
+      "name": gs.sim.names[other],
+      "profile": $otherProfile,
+      "stock": seatStateJson(gs.sim.seats[other])["stock"],
+      "escrowed": seatStateJson(gs.sim.seats[other])["escrowed"],
+      "production": bundleJson(Production[otherProfile]),
+      "commission": bundleJson(Commission[otherProfile]),
+      "commissionPay": CommissionPay[otherProfile],
+      "hearts": gs.sim.hearts(other)
+    })
   %*{
     "type": "state",
     "slot": slot,
@@ -124,6 +144,8 @@ proc playerStateJson(gs: GameState, slot: int): JsonNode =
     "turns": gs.config.turns,
     "turnsPlayed": gs.sim.turnsPlayed,
     "board": gs.sim.boardJson(),
+    "publicSeats": publicSeats,
+    "recent": gs.sim.recentJson(),
     "started": gs.started,
     "done": gs.sim.done,
     "reason": gs.sim.reason
@@ -286,6 +308,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var seats: seq[int]
       var prompts: seq[string]
+      var external: seq[bool]
+      var decisionId: int
       var scripted: seq[ScriptKind]
       withLock stateLock:
         if state.sim.done:
@@ -304,14 +328,41 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         seats = state.sim.pendingSeats()
         simCopy = state.sim
         prompts = state.prompts
+        external = state.external
         scripted = state.scripted
+        state.pendingActions = newSeq[JsonNode](config.players.len)
+        inc state.decisionId
+        decisionId = state.decisionId
+        for seat in seats:
+          if external[seat] and state.playerSockets.hasKey(seat):
+            state.playerSockets[seat].send($ %*{
+              "type": "observation", "id": decisionId,
+              "observation": state.playerStateJson(seat)})
+          if external[seat]:
+            scripted[seat] = skTrader
         echo "escrow: turn ", state.sim.turn, " of ", config.turns,
           " at ", (epochTime() - gameStart).int, "s"
 
-      ## The slow part (Claude, ONE parallel batch for the turn) runs
+      ## Model requests (ONE parallel batch for the turn) run
       ## outside the lock on a snapshot; only this thread mutates the sim,
       ## so the snapshot cannot go stale.
-      let decisions = client.decideAll(simCopy, seats, prompts, scripted)
+      var decisions = client.decideAll(simCopy, seats, prompts, scripted)
+      let deadline = epochTime() + config.llmTimeoutSeconds.float
+      while epochTime() < deadline:
+        var ready = true
+        withLock stateLock:
+          for seat in seats:
+            if external[seat] and state.playerSockets.hasKey(seat) and
+                state.pendingActions[seat].isNil:
+              ready = false
+        if ready:
+          break
+        sleep(20)
+      withLock stateLock:
+        for index, seat in seats:
+          if external[seat] and not state.pendingActions[seat].isNil:
+            let move = parseDecision(state.pendingActions[seat], simCopy, seat)
+            decisions[index] = SeatDecision(move: move, scripted: false)
 
       withLock stateLock:
         for index, seat in seats:
@@ -416,7 +467,7 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         state.playerSockets.len, "/", state.config.tokens.len, ")"
       websocket.send($ %*{
         "type": "welcome",
-        "protocol": "escrow.player.v1",
+        "protocol": "escrow.player.v2",
         "slot": slot,
         "name": state.sim.names[slot],
         "profile": state.sim.profileName(slot),
@@ -461,6 +512,23 @@ proc websocketHandler(
         return
       try:
         let payload = parseJson(message.data)
+        if payload{"type"}.getStr() == "register":
+          if payload["control"].getStr() != "external":
+            raise newException(EscrowError, "unknown player control")
+          withLock stateLock:
+            state.external[slot] = true
+          return
+        if payload{"type"}.getStr() == "action":
+          withLock stateLock:
+            if state.external[slot] and payload["id"].getInt() ==
+                state.decisionId and state.pendingActions[slot].isNil:
+              let action = payload["action"]
+              let move = parseDecision(action, state.sim, slot)
+              let problem = state.sim.validateMove(slot, move)
+              if problem.len > 0:
+                raise newException(EscrowError, problem)
+              state.pendingActions[slot] = action
+          return
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
           if prompt.runeLen > MaxPromptLen:
@@ -473,6 +541,7 @@ proc websocketHandler(
             else: parseScriptKind(node.getStr())
           withLock stateLock:
             state.prompts[slot] = prompt
+            state.external[slot] = false
             state.scripted[slot] = scripted
           echo "escrow: slot ", slot, " delivered a prompt (",
             prompt.len, " chars",
@@ -545,6 +614,8 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.config = config
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)
+  state.external = newSeq[bool](config.players.len)
+  state.pendingActions = newSeq[JsonNode](config.players.len)
   state.scripted = newSeq[ScriptKind](config.players.len)
   runtimeConfigGlobal = runtimeConfig
 
