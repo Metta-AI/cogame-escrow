@@ -1,12 +1,10 @@
-## Escrow player: a policy is a prompt, Jev choice policy, or scripted.
+## Escrow player: a policy is prompt-driven or scripted.
 ##
 ## Prompt and scripted policies register with the game's existing adapters.
-## External policies receive seat observations and submit ordinary actions.
 ##
 ## PLAYER_SCRIPTED=trader (or 1) registers the seat as the built-in trading
 ## baseline instead; PLAYER_SCRIPTED=hoarder as the autarky foil. The
 ## server plays those deterministically, no LLM.
-## PLAYER_JEV=1 ranks ordinary seat actions in this player process.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <escrow-image> --name my-escrow \
@@ -14,7 +12,6 @@
 
 import
   std/[json, options, os, strutils, times],
-  escrow/jev_policy,
   whisky
 
 const DefaultPrompt = """
@@ -47,19 +44,12 @@ when isMainModule:
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
   let scripted = getEnv("PLAYER_SCRIPTED").strip()
-  let jevRequested = getEnv("PLAYER_JEV") == "1"
-  let jev = jevRequested and (
-    getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip().len > 0 or
-    getEnv("METTA_CAPTURE_URL").strip().len > 0 or
-    getEnv("TYPESAFE_API_KEY").strip().len > 0)
   var prompt = getEnv("PLAYER_PROMPT")
-  if prompt.len == 0 and not jev:
+  if prompt.len == 0:
     prompt = DefaultPrompt
 
   proc promptFrame(): string =
-    if jev: $ %*{"type": "register", "control": "external"}
-    else: $ %*{"type": "prompt", "prompt": prompt,
-      "scripted": (if jevRequested: "trader" else: scripted)}
+    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
 
   echo "escrow player: connecting to game"
   let socket = newWebSocket(url)
@@ -100,11 +90,6 @@ when isMainModule:
       of "final":
         echo "escrow player: final hearts ", payload{"hearts"}
         break
-      of "observation":
-        if jev:
-          let action = chooseAction(payload["observation"])
-          socket.send($ %*{"type": "action", "id": payload["id"],
-            "action": action})
       else:
         discard
     except CatchableError as error:
