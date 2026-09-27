@@ -55,9 +55,9 @@ cogs. The only hidden information is the other seats' private notes. This game
 is about commitment and clause-drafting, not concealment.
 
 **The game supports prompt and action policies.** Prompt policies ask Claude
-for gives, an offer, signings, a message, and notes. A `PLAYER_JEV=1` player
-policy ranks pass and affordable signatures from its seat observation. The
-game server batches prompt calls each turn and validates every submitted
+for gives, an offer, signings, a message, and notes. External action policies
+receive seat observations and submit complete actions over the player socket.
+The game server batches prompt calls each turn and validates every submitted
 action. Two built-in
 **scripted baselines** — `trader` (value everything at a flat house price, sign
 the best affordable offers, post one one-for-one swap of its largest surplus
@@ -158,18 +158,13 @@ uv run coworld upload-policy <escrow image> --name my-escrow \
 Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=trader` or
 `--env PLAYER_SCRIPTED=hoarder`.
 
-For a Jev policy, reuse the image with `--env PLAYER_JEV=1`. The player
-container uses the hosted Bedrock sidecar, `METTA_CAPTURE_URL` and
-`METTA_CAPTURE_KEY`, or `TYPESAFE_API_KEY`, in that order. It ranks pass,
-affordable signatures, and funded swap offers from its seat-private
-observation. The game validates the selected action using its normal rules.
-Missing or invalid actions use the `trader` baseline. This policy does not
-send messages or write notes.
+External policies register with `{"type":"register","control":"external"}`
+and receive seat observations. They reply with a complete action and matching
+observation id; the game validates it under its normal rules. Missing or
+invalid actions use the `trader` baseline.
 
-For a local paired comparison against three traders, set `TYPESAFE_API_KEY`
-and run the same seed twice:
+For a local scripted episode against three traders:
 
 ```bash
-bash tools/local_episode.sh trader 7 8
-bash tools/local_episode.sh jev 7 8
+bash tools/local_episode.sh 7 8
 ```
