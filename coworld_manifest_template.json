@@ -23,9 +23,7 @@
       "run": [
         "/bin/escrow"
       ],
-      "env": {
-        "ANTHROPIC_API_KEY_URI": "secret://coworld/escrow/anthropic_api_key"
-      },
+      "env": {},
       "source_url": "https://github.com/Metta-AI/cogame-escrow/tree/main"
     },
     "config_schema": {
