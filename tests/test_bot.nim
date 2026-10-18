@@ -188,7 +188,7 @@ suite "scripted baselines":
     while not sim.done:
       let seats = sim.pendingSeats()
       let decisions = client.decideAll(sim, seats,
-        @["be bold", "", "", ""], @[skNone, skNone, skHoarder, skNone])
+        @["be bold", "", "", ""], @[skNone, skNone, skHoarder, skNone], PromptSelection())
       check decisions.len == seats.len
       for index, seat in seats:
         let kind = if seat == 2: skHoarder else: skTrader
@@ -367,7 +367,7 @@ suite "scripted baselines":
     let seats = sim.pendingSeats()
     check seats.len == Seats
     let decisions = client.decideAll(sim, seats, @["", "", "", ""],
-      @[skNone, skNone, skNone, skNone])
+      @[skNone, skNone, skNone, skNone], PromptSelection())
     check decisions.len == seats.len
     for index, seat in seats:
       let expected = scriptedAction(sim, seat, skTrader)
@@ -419,7 +419,7 @@ suite "scripted baselines":
     let seats = sim.pendingSeats()
     check seats.len == Seats
     let decisions = client.decideAll(sim, seats, @["", "", "", ""],
-      @[skTrader, skNone, skNone, skNone])
+      @[skTrader, skNone, skNone, skNone], PromptSelection())
     stubStop = true
     joinThread(stub)
     listener.close()

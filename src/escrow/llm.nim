@@ -1,3 +1,5 @@
+import prompts
+export prompts
 ## Claude-backed decision making for Escrow. Each seat's policy is just a
 ## prompt: the game server composes the seat's view (its booth, the whole
 ## public floor, the escrow board, the ledger, the messages, its notes)
@@ -21,10 +23,10 @@
 ## scripted plays one deliberately, LLM or not.
 
 import
-  std/[algorithm, json, math, os, strutils, unicode],
+  std/[algorithm, json, math, os, strutils, unicode, times],
   bitworld/runtime,
   curly,
-  sim
+  sim, evidence
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -70,6 +72,9 @@ type
     ltNone, ltSidecar, ltBedrock, ltAnthropic
 
   LlmClient* = ref object
+    batchId*: int
+    attemptIds*: array[Seats, seq[string]]
+    selectedAttemptIds*: array[Seats, string]
     curl: Curly
     transport: LlmTransport
     apiKey: string          ## anthropic transport
@@ -481,10 +486,9 @@ proc spendableLine*(sim: Sim, seat: int): string =
     "already includes this turn's production; subtract anything you give, " &
     "lock or pay in THIS reply before you commit to the next thing)\n"
 
-proc systemPrompt*(sim: Sim, seat: int): string =
+proc systemPrompt*(sim: Sim, seat: int, selection: PromptSelection): string =
   let profile = sim.profileOf[seat]
-  result = "You are " & sim.names[seat] & ", the " &
-    ($profile).toUpperAscii() & " on a four-cog trading floor. Three goods " &
+  result = selection.introduction(sim.names[seat], ($profile).toUpperAscii()) & " Three goods " &
     "(ORE, GRAIN, TIMBER), one currency (HEARTS), and a contract language " &
     "the game itself executes.\n"
   result.add("""
@@ -799,17 +803,30 @@ proc parseDecision*(payload: JsonNode, sim: Sim, seat: int): Decision =
           "\"" & good.getStr() & "\" is not ORE, GRAIN, TIMBER or HEARTS")
       result.gives.add(order)
 
+proc decisionJson*(move: Move): JsonNode =
+  var gives = newJArray()
+  for order in move.gives:
+    gives.add(%*{"to": order.to, "n": order.n, "good": $order.good})
+  %*{"offer": move.offer, "sign": move.signs, "give": gives,
+    "say": move.say, "notes": move.notes}
+
 proc decideAll*(
   client: LlmClient,
   sim: Sim,
   seats: seq[int],
   prompts: seq[string],
-  scripted: seq[ScriptKind]
+  scripted: seq[ScriptKind],
+  selection: PromptSelection
 ): seq[SeatDecision] =
   ## One decision per seat in `seats`, in order, each tagged with whether
   ## the scripted baseline produced it. Never raises: any failure falls
   ## back to the scripted `trader` baseline so the episode always
   ## advances. `prompts` and `scripted` are indexed by SEAT.
+  inc client.batchId
+  for seat in 0 ..< Seats:
+    client.attemptIds[seat] = @[]
+    client.selectedAttemptIds[seat] = ""
+  let destination = getEnv("ESCROW_ATTEMPT_TRACE_DIR")
   result = newSeq[SeatDecision](seats.len)
   var open: seq[int]     ## indexes into `seats` still undecided
   var hints = newSeq[string](seats.len)
@@ -829,22 +846,45 @@ proc decideAll*(
     ## seat goes out in ONE parallel batch: 16 turns is 16 round trips,
     ## not 64.
     var batch: RequestBatch
+    var paths, ids: seq[string]
+    var starts: seq[float]
     for index in open:
       let seat = seats[index]
       var user = sim.userPrompt(seat, prompts[seat])
       if attempt > 0:
         user.add("\n\nYour previous reply was invalid: " & hints[index] &
           ". Respond with ONLY the requested JSON object.")
-      let request = client.requestFor(systemPrompt(sim, seat), user, seat)
+      let system = systemPrompt(sim, seat, selection)
+      let request = client.requestFor(system, user, seat)
+      let identity = $client.batchId & "-" & $seat & "-" & $attempt
+      let path = destination / (identity & ".jsonl")
+      paths.add(path)
+      ids.add(identity)
+      starts.add(epochTime())
+      client.attemptIds[seat].add(identity)
+      if destination.len > 0:
+        let model = if client.transport == ltBedrock: client.bedrockModels[client.bedrockModel] else: client.model
+        writePrivate(path, $(%*{
+          "event_type": "attempt_started", "attempt_id": identity, "visibility": "private",
+          "source_revision": getEnv("ESCROW_SOURCE_REVISION"), "batch": client.batchId,
+          "seat": seat, "turn": sim.turn, "retry": attempt,
+          "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+          "prompt_template": selection.promptMetadata(system, user),
+          "request": {"transport": $client.transport, "model": model, "body": parseJson(request.body)}}) & "\n")
       batch.post(request.url, request.headers, request.body, $index)
     let responses = client.curl.makeRequests(batch, client.timeoutSeconds)
     var stillOpen: seq[int]
     for position, index in open:
       let seat = seats[index]
+      var text, failure: string
+      var parsed, normalized = newJNull()
+      var selected = false
       try:
-        let text = client.textOf(responses[position].response,
+        text = client.textOf(responses[position].response,
           responses[position].error, batch[position].url)
-        let decision = parseDecision(extractJsonObject(text), sim, seat)
+        parsed = extractJsonObject(text)
+        let decision = parseDecision(parsed, sim, seat)
+        normalized = decisionJson(decision)
         ## Reject illegal replies here so the retry carries the hint. The
         ## strict validator walks the sim's own resolution order on a copy
         ## of this seat's stock.
@@ -852,11 +892,22 @@ proc decideAll*(
         if problem.len > 0:
           raise newException(EscrowError, problem)
         result[index] = SeatDecision(move: decision, scripted: false)
+        selected = true
+        client.selectedAttemptIds[seat] = ids[position]
       except CatchableError as error:
+        failure = error.msg
         echo "escrow llm: seat ", seat, " attempt ", attempt, " failed: ",
           error.msg
         hints[index] = cleanText(error.msg, 300)
         stillOpen.add(index)
+      finally:
+        if destination.len > 0:
+          appendPrivate(paths[position], %*{
+            "event_type": "attempt_finished", "attempt_id": ids[position],
+            "raw_response": responses[position].response.body, "response": text,
+            "failure": failure, "parsed_action": parsed, "normalized_action": normalized,
+            "selected": selected, "latency_ms": int((epochTime() - starts[position]) * 1000.0),
+            "platform_call_id": newJNull(), "behavior_logprobs": newJNull()})
     open = stillOpen
   for index in open:
     let seat = seats[index]

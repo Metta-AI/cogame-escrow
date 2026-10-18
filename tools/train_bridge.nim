@@ -2,31 +2,48 @@
 ## nim c -d:release --path:src -o:/tmp/escrow-train-bridge tools/train_bridge.nim
 
 import std/[hashes, json, os]
-import escrow/[sim, llm]
+import escrow/[sim, llm, observations]
 
 const OperatorPrompt = "Trade to maximize your own score using only your booth and the public floor."
 
 var
-  game: Sim
+  game, view: Sim
+  textMode: bool
+  selection: PromptSelection
   decisionId: int
   seat: int
   manifestPath: string
   variant: string
 
 proc currentDecision(): JsonNode =
-  let prompt = userPrompt(game, seat, OperatorPrompt)
+  let user = userPrompt(view, seat, OperatorPrompt)
+  let system = systemPrompt(view, seat, selection)
+  var semantic = if textMode: decisionView(view, seat) else: %*{"system": system, "user": user}
+  if textMode: semantic["prompt_template"] = selection.promptMetadata(system, user)
+  let schema = if textMode:
+    %*{"type": "object", "properties": {
+      "give": {"type": "array", "maxItems": MaxGives, "items": {"type": "object",
+        "properties": {"to": {"type": "integer", "minimum": 0, "maximum": Seats - 1},
+          "n": {"type": "integer", "minimum": 1, "maximum": MaxUnits},
+          "good": {"type": "string", "enum": ["ORE", "GRAIN", "TIMBER", "HEARTS"]}},
+        "required": ["to", "n", "good"]}},
+      "offer": {"type": "string", "maxLength": MaxOfferChars},
+      "sign": {"type": "array", "maxItems": MaxSigns, "items": {"type": "string"}},
+      "say": {"type": "string", "maxLength": MaxSayLen},
+      "notes": {"type": "string", "maxLength": MaxNotesLen}}}
+    else: %*{"type": "object", "properties": {
+      "choice": {"type": "integer", "minimum": 0, "maximum": 3}}, "required": ["choice"]}
   %*{"kind": "decision", "game": "escrow", "decision_id": decisionId,
-    "seat": seat, "engine_seat": seat, "turn": game.turn,
-    "semantic_view": {"system": systemPrompt(game, seat), "user": prompt},
-    "inbox": [], "messages": [
-      {"role": "system", "content": systemPrompt(game, seat)},
-      {"role": "user", "content": prompt}],
-    "speech_messages": [],
-    "action_schema": {"type": "object", "properties": {
-      "choice": {"type": "integer", "minimum": 0, "maximum": 3}},
-      "required": ["choice"]}, "typed_question": newJNull()}
+    "seat": seat, "engine_seat": seat, "turn": view.turn,
+    "semantic_view": semantic, "inbox": [],
+    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    "speech_messages": [], "action_schema": schema, "typed_question": newJNull()}
 
 proc reset(command: JsonNode): JsonNode =
+  selection = promptSelection(command)
+  if textMode and selection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference} and
+      (not command.hasKey("split") or command["split"].getStr() == "train"):
+    raise newException(ValueError, "held-out wording is evaluation-only")
   doAssert command["players"].getInt() == Seats
   let manifest = parseFile(manifestPath)
   var variantConfig = newJNull()
@@ -41,6 +58,7 @@ proc reset(command: JsonNode): JsonNode =
   config.seed = int(hash(command["seed"].getStr()) mod 1_000_000_000)
   config = sampleEpisode(config)
   game = initSim(config)
+  view = game
   decisionId = 0
   seat = 0
   currentDecision()
@@ -81,11 +99,10 @@ proc step(command: JsonNode): JsonNode =
   if command["decision_id"].getInt() != decisionId:
     return %*{"kind": "rejected", "reason": "stale decision"}
   let action = parseJson(command["response"].getStr())
-  let choice = action["choice"].getInt()
-  doAssert choice in 0 .. 3
-  let move = decisionFor(choice)
+  let move = if textMode: parseDecision(action, view, seat) else: decisionFor(action["choice"].getInt())
   doAssert game.validateMove(seat, move) == ""
   game.applyMove(seat, move, true)
+  if game.turn != view.turn: view = game
   inc decisionId
   let observation = if game.done:
     let scores = game.resultsJson()["scores"]
@@ -102,20 +119,23 @@ proc step(command: JsonNode): JsonNode =
   else:
     seat = game.pendingSeats()[0]
     currentDecision()
-  %*{"kind": "accepted", "action": action, "observation": observation}
+  %*{"kind": "accepted", "action": (if textMode: decisionJson(move) else: action), "observation": observation}
 
 when isMainModule:
   let args = commandLineParams()
-  if args.len != 2: quit("usage: escrow-train-bridge MANIFEST [standard|sprint]", 1)
+  if args.len notin [2, 3]: quit("usage: escrow-train-bridge MANIFEST [standard|sprint] [text]", 1)
   manifestPath = absolutePath(args[0])
   variant = args[1]
+  if args.len == 3:
+    doAssert args[2] == "text"
+    textMode = true
   doAssert variant in ["standard", "sprint"]
   for line in stdin.lines:
     let command = parseJson(line)
     let response = case command["kind"].getStr()
       of "reset": reset(command)
       of "encode": encode()
-      of "teacher": %*{"response": $(%*{"choice": 1})}
+      of "teacher": %*{"response": $(if textMode: decisionJson(view.scriptedAction(seat, skTrader)) else: %*{"choice": 1})}
       of "step": step(command)
       else: raise newException(ValueError, "unknown command")
     stdout.writeLine($response)
