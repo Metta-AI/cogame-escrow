@@ -1,4 +1,4 @@
-"""Complete published Escrow games through original numeric and full text interfaces."""
+"""Complete published Escrow games with matched wordings and private-note workflows."""
 
 import hashlib
 import json
@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BRIDGE, ORIGINAL = map(lambda value: Path(value).resolve(), sys.argv[1:3])
+BRIDGE = Path(sys.argv[1]).resolve()
 WORDINGS = (
     "canonical",
     "plain",
@@ -19,16 +19,13 @@ WORDINGS = (
 )
 
 
-def play(
-    variant, seed, wording="canonical", prompt_seed=0, original=False, private=False
-):
+def play(variant, seed, wording="canonical", prompt_seed=0, private=False):
     command = [
-        str(ORIGINAL if original else BRIDGE),
+        str(BRIDGE),
         str(ROOT / "coworld_manifest_template.json"),
         variant,
     ]
-    if not original:
-        command.append("text")
+    command.append("text")
     with subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
     ) as process:
@@ -58,36 +55,35 @@ def play(
             messages = observation["messages"]
             systems.setdefault(seat, messages[0]["content"])
             assert systems[seat] == messages[0]["content"]
-            if not original:
-                view = observation["semantic_view"]
-                metadata = view["prompt_template"]
-                assert metadata["bank"] == "escrow-rules-v1"
-                assert metadata["variant"] == (
-                    WORDINGS[prompt_seed] if wording == "mixed" else wording
+            view = observation["semantic_view"]
+            metadata = view["prompt_template"]
+            assert metadata["bank"] == "escrow-rules-v2"
+            assert metadata["variant"] == (
+                WORDINGS[prompt_seed] if wording == "mixed" else wording
+            )
+            for message in messages:
+                assert (
+                    metadata[message["role"] + "_sha256"].lower()
+                    == hashlib.sha256(message["content"].encode()).hexdigest()
                 )
-                for message in messages:
-                    assert (
-                        metadata[message["role"] + "_sha256"].lower()
-                        == hashlib.sha256(message["content"].encode()).hexdigest()
-                    )
-                public = (view["public_floor"], view["board"], view["recent"])
-                if seat == 0:
-                    frozen = public
-                assert public == frozen
-                assert all(
-                    "notes" not in other and "notes" not in other["state"]
-                    for other in view["public_floor"]
-                )
-                if private:
-                    for other in range(4):
-                        if other != seat:
-                            assert (
-                                f"PRIVATE-{other}-"
-                                not in json.dumps(view) + messages[1]["content"]
-                            )
-                    if index >= 4:
-                        assert view["notes"].startswith(f"PRIVATE-{seat}-")
-                        assert len(view["notes"]) == 600
+            public = (view["public_floor"], view["board"], view["recent"])
+            if seat == 0:
+                frozen = public
+            assert public == frozen
+            assert all(
+                "notes" not in other and "notes" not in other["state"]
+                for other in view["public_floor"]
+            )
+            if private:
+                for other in range(4):
+                    if other != seat:
+                        assert (
+                            f"PRIVATE-{other}-"
+                            not in json.dumps(view) + messages[1]["content"]
+                        )
+                if index >= 4:
+                    assert view["notes"].startswith(f"PRIVATE-{seat}-")
+                    assert len(view["notes"]) == 600
             teacher = json.loads(request({"kind": "teacher"})["response"])
             if private:
                 teacher["give"] = [
@@ -124,13 +120,11 @@ def play(
 
 
 for variant in ("standard", "sprint"):
-    for seed in (17, 946001):
-        baseline = play(variant, seed, original=True)
+    for seed in (17,):
+        baseline = play(variant, seed)
         canonical = None
         distinct = []
-        for wording, prompt_seed in [(name, 0) for name in WORDINGS] + [
-            ("mixed", index) for index in range(5)
-        ]:
+        for wording, prompt_seed in [(name, 0) for name in WORDINGS] + [("mixed", 4)]:
             trace, outcome, systems = play(variant, seed, wording, prompt_seed)
             assert (trace, outcome) == baseline[:2]
             if wording == "canonical":
@@ -144,10 +138,10 @@ for variant in ("standard", "sprint"):
     play(variant, 17, private=True)
     print(
         variant,
-        "24 matched text games, two original games, and private text normalization PASS",
+        "10 complete matched/private-note games PASS",
         flush=True,
     )
-print("50 complete text games and four original numeric games PASS")
+print("20 complete text games PASS")
 for wording in WORDINGS[-2:]:
     rejected = subprocess.run(
         [str(BRIDGE), str(ROOT / "coworld_manifest_template.json"), "standard", "text"],

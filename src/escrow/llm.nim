@@ -1,5 +1,3 @@
-import prompts
-export prompts
 ## Claude-backed decision making for Escrow. Each seat's policy is just a
 ## prompt: the game server composes the seat's view (its booth, the whole
 ## public floor, the escrow board, the ledger, the messages, its notes)
@@ -23,10 +21,11 @@ export prompts
 ## scripted plays one deliberately, LLM or not.
 
 import
-  std/[algorithm, json, math, os, strutils, unicode, times],
+  std/[algorithm, json, math, os, strutils, unicode],
   bitworld/runtime,
   curly,
-  sim, evidence
+  sim, prompts
+export prompts
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -72,9 +71,6 @@ type
     ltNone, ltSidecar, ltBedrock, ltAnthropic
 
   LlmClient* = ref object
-    batchId*: int
-    attemptIds*: array[Seats, seq[string]]
-    selectedAttemptIds*: array[Seats, string]
     curl: Curly
     transport: LlmTransport
     apiKey: string          ## anthropic transport
@@ -487,36 +483,38 @@ proc spendableLine*(sim: Sim, seat: int): string =
     "lock or pay in THIS reply before you commit to the next thing)\n"
 
 proc systemPrompt*(sim: Sim, seat: int, selection: PromptSelection): string =
+  let economy = case selection.selectedVariant
+    of pvCanonical: "- Every turn you produce your profile's goods automatically, and at the end\n  of the turn you automatically fill up to 2 copies of your commission from\n  free stock (goods in, hearts out). Filling commissions is the ONLY source\n  of new hearts. Everything else moves hearts between cogs.\n- Your SCORE is your free hearts at the horizon. HIGHER IS BETTER. Leftover\n  goods are worth NOTHING, so convert before the end.\n- Comparative advantage is the whole game: your own bulk good is useless to\n  your own commission and is exactly what somebody else needs. The implied\n  price band is 2.0-2.5 hearts per unit.\n"
+    of pvPlain: "- Your profile automatically produces goods each turn. At turn end, up to two commissions consume free stock and pay hearts. Only commissions create new hearts; other transactions transfer them between cogs.\n- Maximize free hearts at the horizon. Leftover goods are worthless, so convert them before the end.\n- Trade on comparative advantage: your bulk good is useless for your own commission but useful to another cog. The implied price band is 2.0-2.5 hearts per unit.\n"
+    of pvNumbered: "- Production: your profile supplies goods automatically each turn.\n- Conversion: at turn end, up to two commissions consume free stock for hearts; this is the only source of new hearts. All other heart movements are transfers.\n- Objective: highest free hearts at the horizon; leftover goods have no value, so convert before then.\n- Trade logic: your bulk good cannot serve your own commission but another cog needs it. Implied price: 2.0-2.5 hearts per unit.\n"
+    of pvQuestions: "- Where do goods come from? Your profile produces automatically each turn. Where do new hearts come from? Only commissions: up to two fill from free stock at turn end. Other heart movements are transfers.\n- What scores? Free hearts at the horizon; higher is better and leftover goods are worthless, so convert before the end.\n- Why trade? Your bulk good is useless to your own commission but exactly what another cog needs. The implied price band is 2.0-2.5 hearts per unit.\n"
+    of pvReordered: "- Finish with the most free hearts; goods left at the horizon are worthless, so convert before the end.\n- Your profile produces goods automatically each turn, and up to two commissions automatically consume free stock for hearts at turn end. Only those commissions create hearts; all other movements transfer them.\n- Use comparative advantage: your bulk good serves someone else's commission, not yours. The implied price band is 2.0-2.5 hearts per unit.\n"
+    of pvHeldoutBriefing: "- Build your score through trade and conversion. Profile production supplies goods automatically each turn; at turn end, up to two commissions exchange free goods for hearts. They alone create new hearts; everything else transfers existing hearts.\n- Ranking uses free hearts at the horizon, highest first. Convert goods before then because leftovers have no value.\n- Your own bulk good is useless to your commission but needed by another cog. This comparative advantage implies a 2.0-2.5 hearts-per-unit price band.\n"
+    of pvHeldoutReference: "- Automatic supply: profile goods each turn. Automatic conversion: at most two commissions from free stock at turn end. New-heart source: commissions only; all other heart movements are transfers.\n- Score: free hearts at the horizon, higher wins. Leftover goods: zero value; convert before the end.\n- Comparative advantage: your bulk good is useless for your own commission and useful to another cog's. Implied price band: 2.0-2.5 hearts per unit.\n"
+    of pvMixed: raise newException(ValueError, "mixed selection must resolve to a training wording")
+  let funding = case selection.selectedVariant
+    of pvCanonical: "- CONTRACTS ARE PRE-FUNDED, SO BREACH IS IMPOSSIBLE. Posting an offer moves\n  your LOCK bundle out of your free stock into escrow immediately; signing\n  moves the acceptor's ASK bundle into escrow. Settlement only redistributes\n  what is already locked. Escrowed stock cannot be given away, cannot fill a\n  commission, and DOES NOT COUNT toward a HOLDS condition - that is the\n  loophole: locking your own stock in an unrelated contract makes someone's\n  \"HOLDS you 6 TIMBER\" clause read false.\n"
+    of pvPlain: "- Contracts are fully funded in advance, making breach impossible. Posting removes the proposer's LOCK from free stock into escrow; signing removes the acceptor's ASK. Settlement distributes only those locked assets. Escrow cannot be given away, fill commissions, or satisfy HOLDS. Locking stock in an unrelated contract can therefore make a clause such as \"HOLDS you 6 TIMBER\" false.\n"
+    of pvNumbered: "- Contract funding: (1) posting escrows the proposer's LOCK, (2) signing escrows the acceptor's ASK, (3) settlement only reallocates what is locked. Breach is mechanically impossible. Escrow is unavailable for gifts, commissions, and HOLDS checks. Thus an unrelated lock can make \"HOLDS you 6 TIMBER\" false.\n"
+    of pvQuestions: "- Can a signer later refuse payment? No: contracts are pre-funded. What is locked? Posting removes LOCK from the proposer, and signing removes ASK from the acceptor. What settles? Only existing escrow. Can escrow be gifted, commissioned, or counted by HOLDS? No. What loophole follows? Locking your stock elsewhere can make \"HOLDS you 6 TIMBER\" false.\n"
+    of pvReordered: "- HOLDS ignores escrow: locking your stock in an unrelated contract can make \"HOLDS you 6 TIMBER\" false. Locked stock also cannot be given away or used for commissions. Contracts cannot be breached because posting escrows the proposer's LOCK and signing escrows the acceptor's ASK; settlement only redistributes these pre-funded assets.\n"
+    of pvHeldoutBriefing: "- Treat escrow as committed assets. An offer immediately moves the proposer's LOCK out of free stock; a signature moves the acceptor's ASK. Settlement reallocates only that funding, so breach is impossible. Locked assets cannot fund gifts or commissions and do not count for HOLDS. An unrelated contract can lock away enough stock to make \"HOLDS you 6 TIMBER\" false.\n"
+    of pvHeldoutReference: "- Funding invariant: all contracts are pre-funded, so breach is impossible. On posting: proposer LOCK enters escrow. On signing: acceptor ASK enters escrow. On settlement: only locked assets are redistributed. Escrow exclusions: gifts, commissions, and HOLDS. Consequence: an unrelated lock can falsify \"HOLDS you 6 TIMBER\".\n"
+    of pvMixed: raise newException(ValueError, "mixed selection must resolve to a training wording")
   let profile = sim.profileOf[seat]
   result = selection.introduction(sim.names[seat], ($profile).toUpperAscii()) & " Three goods " &
     "(ORE, GRAIN, TIMBER), one currency (HEARTS), and a contract language " &
     "the game itself executes.\n"
   result.add("""
 Rules:
-- Every turn you produce your profile's goods automatically, and at the end
-  of the turn you automatically fill up to 2 copies of your commission from
-  free stock (goods in, hearts out). Filling commissions is the ONLY source
-  of new hearts. Everything else moves hearts between cogs.
-- Your SCORE is your free hearts at the horizon. HIGHER IS BETTER. Leftover
-  goods are worth NOTHING, so convert before the end.
-- Comparative advantage is the whole game: your own bulk good is useless to
-  your own commission and is exactly what somebody else needs. The implied
-  price band is 2.0-2.5 hearts per unit.
-- The floor is OPEN OUTCRY. Every cog's profile, free stock, escrowed stock
+""" & economy & """- The floor is OPEN OUTCRY. Every cog's profile, free stock, escrowed stock
   and every live contract is public. Nothing is hidden except other cogs'
   private notes.
 - A turn resolves in this order: (1) production, (2) everyone decides at the
   same time, (3) signings, (4) gives, (5) new offers registered, (6) offers
   posted last turn expire, (7) contracts due this turn settle, (8)
   commissions fill, (9) tally.
-- CONTRACTS ARE PRE-FUNDED, SO BREACH IS IMPOSSIBLE. Posting an offer moves
-  your LOCK bundle out of your free stock into escrow immediately; signing
-  moves the acceptor's ASK bundle into escrow. Settlement only redistributes
-  what is already locked. Escrowed stock cannot be given away, cannot fill a
-  commission, and DOES NOT COUNT toward a HOLDS condition - that is the
-  loophole: locking your own stock in an unrelated contract makes someone's
-  "HOLDS you 6 TIMBER" clause read false.
-- An offer lives exactly one turn: posted on turn t, signable only on t+1,
+""" & funding & """- An offer lives exactly one turn: posted on turn t, signable only on t+1,
   then it expires and the stake comes back.
 - Your turn view carries a SIGNABLE NOW list: the contract ids you may sign
   this turn, already checked against the rules for you, each marked
@@ -822,11 +820,6 @@ proc decideAll*(
   ## the scripted baseline produced it. Never raises: any failure falls
   ## back to the scripted `trader` baseline so the episode always
   ## advances. `prompts` and `scripted` are indexed by SEAT.
-  inc client.batchId
-  for seat in 0 ..< Seats:
-    client.attemptIds[seat] = @[]
-    client.selectedAttemptIds[seat] = ""
-  let destination = getEnv("ESCROW_ATTEMPT_TRACE_DIR")
   result = newSeq[SeatDecision](seats.len)
   var open: seq[int]     ## indexes into `seats` still undecided
   var hints = newSeq[string](seats.len)
@@ -846,45 +839,22 @@ proc decideAll*(
     ## seat goes out in ONE parallel batch: 16 turns is 16 round trips,
     ## not 64.
     var batch: RequestBatch
-    var paths, ids: seq[string]
-    var starts: seq[float]
     for index in open:
       let seat = seats[index]
       var user = sim.userPrompt(seat, prompts[seat])
       if attempt > 0:
         user.add("\n\nYour previous reply was invalid: " & hints[index] &
           ". Respond with ONLY the requested JSON object.")
-      let system = systemPrompt(sim, seat, selection)
-      let request = client.requestFor(system, user, seat)
-      let identity = $client.batchId & "-" & $seat & "-" & $attempt
-      let path = destination / (identity & ".jsonl")
-      paths.add(path)
-      ids.add(identity)
-      starts.add(epochTime())
-      client.attemptIds[seat].add(identity)
-      if destination.len > 0:
-        let model = if client.transport == ltBedrock: client.bedrockModels[client.bedrockModel] else: client.model
-        writePrivate(path, $(%*{
-          "event_type": "attempt_started", "attempt_id": identity, "visibility": "private",
-          "source_revision": getEnv("ESCROW_SOURCE_REVISION"), "batch": client.batchId,
-          "seat": seat, "turn": sim.turn, "retry": attempt,
-          "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-          "prompt_template": selection.promptMetadata(system, user),
-          "request": {"transport": $client.transport, "model": model, "body": parseJson(request.body)}}) & "\n")
+      let request = client.requestFor(systemPrompt(sim, seat, selection), user, seat)
       batch.post(request.url, request.headers, request.body, $index)
     let responses = client.curl.makeRequests(batch, client.timeoutSeconds)
     var stillOpen: seq[int]
     for position, index in open:
       let seat = seats[index]
-      var text, failure: string
-      var parsed, normalized = newJNull()
-      var selected = false
       try:
-        text = client.textOf(responses[position].response,
+        let text = client.textOf(responses[position].response,
           responses[position].error, batch[position].url)
-        parsed = extractJsonObject(text)
-        let decision = parseDecision(parsed, sim, seat)
-        normalized = decisionJson(decision)
+        let decision = parseDecision(extractJsonObject(text), sim, seat)
         ## Reject illegal replies here so the retry carries the hint. The
         ## strict validator walks the sim's own resolution order on a copy
         ## of this seat's stock.
@@ -892,22 +862,11 @@ proc decideAll*(
         if problem.len > 0:
           raise newException(EscrowError, problem)
         result[index] = SeatDecision(move: decision, scripted: false)
-        selected = true
-        client.selectedAttemptIds[seat] = ids[position]
       except CatchableError as error:
-        failure = error.msg
         echo "escrow llm: seat ", seat, " attempt ", attempt, " failed: ",
           error.msg
         hints[index] = cleanText(error.msg, 300)
         stillOpen.add(index)
-      finally:
-        if destination.len > 0:
-          appendPrivate(paths[position], %*{
-            "event_type": "attempt_finished", "attempt_id": ids[position],
-            "raw_response": responses[position].response.body, "response": text,
-            "failure": failure, "parsed_action": parsed, "normalized_action": normalized,
-            "selected": selected, "latency_ms": int((epochTime() - starts[position]) * 1000.0),
-            "platform_call_id": newJNull(), "behavior_logprobs": newJNull()})
     open = stillOpen
   for index in open:
     let seat = seats[index]

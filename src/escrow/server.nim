@@ -40,11 +40,8 @@ const
   MaxPromptLen = 4000
   ReplayVersion = 1
 
-import observations, evidence
-
 type
   GameState = object
-    tracePath: string
     selection: PromptSelection
     config: GameConfig
     sim: Sim
@@ -215,8 +212,6 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
       return
     state.finished = true
     results = state.sim.resultsJson()
-    if state.tracePath.len > 0:
-      appendPrivate(state.tracePath, %*{"event_type": "host_finished", "results": results})
     replayData = state.replayPayload(results)
 
     ## Send final frames to players BEFORE writing artifacts: the hosted
@@ -371,8 +366,6 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             decisions[index] = SeatDecision(move: move, scripted: false)
 
       withLock stateLock:
-        let eventStart = state.sim.events.len
-        var fallbackUsed: array[Seats, bool]
         for index, seat in seats:
           let decision = decisions[index].move
           ## Not the registration state: `decideAll` reports the baseline
@@ -391,37 +384,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           except EscrowError as error:
             echo "escrow: reply rejected (", error.msg,
               "); using the trader baseline"
-            fallbackUsed[seat] = true
             let fallback = scriptedAction(state.sim, seat, skTrader)
             state.sim.applyMove(seat, fallback, true)
-        if state.tracePath.len > 0:
-          var events = newJArray()
-          for eventIndex in eventStart ..< state.sim.events.len:
-            events.add(eventToJson(state.sim.events[eventIndex]))
-          for index, seat in seats:
-            let system = systemPrompt(simCopy, seat, state.selection)
-            let user = userPrompt(simCopy, seat, prompts[seat])
-            let proposal = decisionJson(decisions[index].move)
-            let executed = decisionJson(state.sim.resolvedMove(seat, eventStart))
-            let externalAction = external[seat] and not state.pendingActions[seat].isNil
-            let modelAccepted = not external[seat] and not fallbackUsed[seat] and
-              not decisions[index].scripted and proposal == executed and
-              client.selectedAttemptIds[seat].len > 0
-            let origin = if externalAction: "external"
-              elif fallbackUsed[seat] or client.attemptIds[seat].len > 0 and decisions[index].scripted: "scripted-fallback"
-              elif decisions[index].scripted: "scripted"
-              else: "model"
-            appendPrivate(state.tracePath, %*{
-              "event_type": "host_decision", "visibility": "private", "batch": decisionId,
-              "seat": seat, "turn": simCopy.turn, "observation": decisionView(simCopy, seat),
-              "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-              "prompt_template": state.selection.promptMetadata(system, user),
-              "proposal": proposal, "executed_action": executed, "policy_origin": origin,
-              "attempt_ids": client.attemptIds[seat],
-              "selected_attempt_id": (if modelAccepted: %client.selectedAttemptIds[seat] else: newJNull()),
-              "event_start": eventStart, "event_end": state.sim.events.len, "events": events,
-              "stored_notes": state.sim.notes[seat],
-              "terminal": state.sim.done and seat == seats[^1]})
         state.broadcastLocked()
 
       ## Pace between turns so spectators can read the floor.
@@ -646,16 +610,11 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   gameServer.serve(Port(runtimeConfig.port), runtimeConfig.host)
 
 proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
-  state.selection = promptSelection(parseJson(runtimeConfig.config))
   if config.tokens.len != config.players.len:
     raise newException(EscrowError, "tokens and players must align")
+  state.selection = promptSelection(parseJson(runtimeConfig.config))
   state.config = config
   state.sim = initSim(config)
-  state.tracePath = getEnv("ESCROW_HOST_TRACE_PATH")
-  if state.tracePath.len > 0:
-    writePrivate(state.tracePath, $(%*{"event_type": "host_started", "visibility": "private",
-      "source_revision": getEnv("ESCROW_SOURCE_REVISION"), "seed": config.seed,
-      "prompt_selection": state.selection.selectionMetadata()}) & "\n")
   state.prompts = newSeq[string](config.players.len)
   state.external = newSeq[bool](config.players.len)
   state.pendingActions = newSeq[JsonNode](config.players.len)

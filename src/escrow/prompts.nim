@@ -17,7 +17,7 @@ type
     seed*: int
 
 const
-  PromptBankVersion* = "escrow-rules-v1"
+  PromptBankVersion* = "escrow-rules-v2"
 
 proc promptSelection*(node: JsonNode): PromptSelection =
   if node.kind != JObject:

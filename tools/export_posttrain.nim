@@ -1,14 +1,17 @@
-## Complete private candidates. Shared review owns admission to training.
+## Export complete native Escrow games as Metta post-training examples.
+## Usage: nim r --path:src tools/export_posttrain.nim OUTPUT GAMES [FIRST_SEED] [standard|sprint]
+
 import std/[json, os, osproc, strutils]
-import escrow/[llm, sim, observations, evidence]
+import escrow/[sim, llm]
 
 const OperatorPrompt = "Trade to maximize your own score using only your booth and the public floor."
+const Variants = ["standard", "sprint"]
 
 when isMainModule:
   let args = commandLineParams()
   if args.len notin [2, 3, 4, 6]:
-    quit("usage: export_posttrain OUTPUT GAMES [FIRST_SEED] [VARIANT [PROMPT_VARIANT PROMPT_SEED]]", 1)
-  let output = absolutePath(args[0])
+    quit("usage: export_posttrain OUTPUT GAMES [FIRST_SEED] [standard|sprint [PROMPT_VARIANT PROMPT_SEED]]", 1)
+  let output = args[0]
   let games = parseInt(args[1])
   let firstSeed = if args.len >= 3: parseInt(args[2]) else: 1
   let variant = if args.len >= 4: args[3] else: "standard"
@@ -16,113 +19,116 @@ when isMainModule:
     %*{"promptVariant": args[4], "promptSeed": parseInt(args[5])} else: newJObject())
   if selection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference}:
     raise newException(ValueError, "held-out wording is evaluation-only")
-  doAssert games >= 10 and firstSeed >= 1
-  doAssert not dirExists(output) and not fileExists(output)
   let status = execCmdEx("git status --porcelain")
   doAssert status.exitCode == 0 and status.output.strip().len == 0,
-    "Commit qualified source before generating a pinned candidate corpus"
-  let head = execCmdEx("git rev-parse HEAD")
-  doAssert head.exitCode == 0
-  let revision = head.output.strip()
+    "Commit source before generating a pinned corpus"
+  if games < 10 or firstSeed < 1:
+    quit("at least ten games and a positive first seed are required", 1)
+  if variant notin Variants:
+    quit("unknown variant: " & variant, 1)
+  if dirExists(output) or fileExists(output):
+    quit("output already exists: " & output, 1)
+  createDir(output)
+  setFilePermissions(output, {fpUserRead, fpUserWrite, fpUserExec})
+  let sourceRevision = execProcess("git rev-parse HEAD").strip()
   let manifest = parseFile("coworld_manifest_template.json")
   var variantConfig = newJNull()
   for entry in manifest["variants"]:
-    if entry["id"].getStr() == variant: variantConfig = entry["game_config"]
+    if entry["id"].getStr() == variant:
+      variantConfig = entry["game_config"]
   doAssert variantConfig.kind == JObject
-  writePrivate(output / "trajectories.jsonl", "")
-  writePrivate(output / "execution.jsonl", "")
-  let stream = open(output / "trajectories.jsonl", fmAppend)
-  let execution = open(output / "execution.jsonl", fmAppend)
-  var runs = newJArray()
-  try:
-    for seed in firstSeed ..< firstSeed + games:
-      var config = defaultGameConfig()
-      let runtimeConfig = copy(variantConfig)
-      runtimeConfig["tokens"] = %*["t0", "t1", "t2", "t3"]
-      runtimeConfig["seed"] = %seed
-      config.update($runtimeConfig)
-      config = sampleEpisode(config)
-      var world = initSim(config)
-      let family = "escrow-" & $seed
-      let episode = family & "-" & variant & "-" & $selection.selectedVariant & "-" & $selection.seed
-      var count = 0
-      while not world.done:
-        let view = world
-        let seats = view.pendingSeats()
-        var orders: array[Seats, Move]
-        var records: array[Seats, JsonNode]
-        for seat in seats:
-          let system = systemPrompt(view, seat, selection)
-          let user = userPrompt(view, seat, OperatorPrompt)
-          let messages = %*[{"role": "system", "content": system}, {"role": "user", "content": user}]
-          var observation = decisionView(view, seat)
-          observation["prompt_template"] = selection.promptMetadata(system, user)
-          let teacher = scriptedAction(view, seat, skTrader)
-          let proposal = decisionJson(teacher)
-          orders[seat] = parseDecision(proposal, view, seat)
-          let normalized = decisionJson(orders[seat])
-          let accepted = proposal == normalized
-          let id = count + seat
-          let attemptId = $id & "-teacher"
-          let attempt = %*{
-            "attempt_id": attemptId, "policy": "scripted-trader", "origin": "teacher",
-            "inference_mode": "text_action", "prompt": messages,
-            "response": $proposal, "parsed_action": proposal, "accepted": accepted,
-            "request": newJNull(), "platform_call_id": newJNull(), "behavior_logprobs": newJNull(),
-            "rejection_reason": (if accepted: newJNull() else: %"engine-normalized-submission")}
-          records[seat] = %*{
-            "schema_version": "1", "event_type": "decision", "episode_id": episode,
-            "decision_id": $id, "decision_index": id,
-            "game": "escrow", "game_version": "source-" & revision,
-            "source_revision": revision, "seat": $seat, "visibility": "private",
-            "observation": observation, "prompt": (if accepted: messages else: newJNull()),
-            "attempts": [attempt], "selected_attempt_id": (if accepted: %attemptId else: newJNull()),
-            "executed_action": normalized, "action_status": (if accepted: "accepted" else: "fallback"),
-            "fallback_origin": (if accepted: newJNull() else: %"engine-normalized-submission"),
-            "terminal": false}
-        let eventStart = world.events.len
-        for seat in seats:
-          world.applyMove(seat, orders[seat], true)
-        var events = newJArray()
-        for index in eventStart ..< world.events.len: events.add(eventToJson(world.events[index]))
-        for seat in seats:
-          let executed = decisionJson(world.resolvedMove(seat, eventStart))
-          let accepted = executed == records[seat]["attempts"][0]["parsed_action"]
-          records[seat]["executed_action"] = executed
-          records[seat]["attempts"][0]["accepted"] = %accepted
-          records[seat]["terminal"] = %(world.done and seat == seats[^1])
-          if not accepted:
-            records[seat]["attempts"][0]["rejection_reason"] = %"engine-normalized-submission"
-            records[seat]["selected_attempt_id"] = newJNull()
-            records[seat]["prompt"] = newJNull()
-            records[seat]["action_status"] = %"fallback"
-            records[seat]["fallback_origin"] = %"engine-normalized-submission"
-          execution.writeLine($(%*{
-            "schema_version": 1, "event_type": "decision_execution", "episode_id": episode,
-            "decision_id": records[seat]["decision_id"], "source_revision": revision,
-            "visibility": "private", "seat": seat, "turn": view.turn,
-            "event_start": eventStart, "event_end": world.events.len, "events": events,
-            "stored_notes": world.notes[seat], "resolved_action": executed,
-            "terminal": world.done and seat == seats[^1]}))
-          stream.writeLine($records[seat])
-        count += seats.len
-      doAssert world.reason == "complete"
-      let outcome = world.resultsJson()
-      var participants = newJObject()
-      for seat in 0 ..< Seats: participants[$seat] = %*{"score": outcome["scores"][seat]}
-      stream.writeLine($(%*{
-        "schema_version": "1", "event_type": "episode", "episode_id": episode,
-        "seed_family": family, "game": "escrow", "game_version": "source-" & revision,
-        "source_revision": revision, "status": "completed", "outcome": outcome,
-        "participant_outcomes": participants}))
-      runs.add(%*{"seed": seed, "decisions": count, "scores": outcome["scores"], "turns_played": world.turnsPlayed})
-  finally:
-    execution.close()
-    stream.close()
-  writePrivate(output / "manifest.json", pretty(%*{
-    "schema_version": 1, "game": "escrow", "variant": variant,
-    "source_revision": revision, "teacher": "scripted-trader",
-    "prompt_selection": selection.selectionMetadata(),
-    "split_authority": "shared Coworld SDK and application importer by seed_family",
-    "execution_evidence": "execution.jsonl", "runs": runs}) & "\n")
-  echo "complete games=", games
+  var
+    trainRows: seq[string]
+    validationRows: seq[string]
+    runs = newJArray()
+  for seed in firstSeed ..< firstSeed + games:
+    var wording = selection
+    if wording.variant == pvMixed: wording.seed += seed - firstSeed
+    var config = defaultGameConfig()
+    let runtimeConfig = copy(variantConfig)
+    runtimeConfig["tokens"] = newJArray()
+    for seat in 0 ..< variantConfig["players"].len:
+      runtimeConfig["tokens"].add(%("t" & $seat))
+    config.update($runtimeConfig)
+    config.seed = seed
+    config = sampleEpisode(config)
+    var sim = initSim(config)
+    var rows: seq[string]
+    while not sim.done:
+      let view = sim
+      let seats = view.pendingSeats()
+      let eventStart = sim.events.len
+      var proposals: array[Seats, JsonNode]
+      var records: array[Seats, string]
+      for seat in seats:
+        let teacher = view.scriptedAction(seat, skTrader)
+        var gives = newJArray()
+        for order in teacher.gives:
+          gives.add(%*{"to": order.to, "n": order.n, "good": $order.good})
+        let completion = %*{
+          "offer": teacher.offer, "sign": teacher.signs,
+          "give": gives, "say": teacher.say, "notes": teacher.notes
+        }
+        let parsed = parseDecision(completion, view, seat)
+        doAssert parsed.offer == teacher.offer
+        doAssert parsed.signs == teacher.signs
+        doAssert parsed.gives == teacher.gives
+        doAssert view.validateMove(seat, parsed) == ""
+        proposals[seat] = completion
+        let system = systemPrompt(view, seat, wording)
+        let user = userPrompt(view, seat, OperatorPrompt)
+        records[seat] = $(%*{
+          "episode_id": "escrow-" & variant & "-" & $seed,
+          "seed": "escrow-" & $seed,
+          "decision_id": view.turn * Seats + seat,
+          "prompt": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+          ],
+          "completion": [{"role": "assistant", "content": $completion}],
+          "game": "escrow",
+          "prompt_template": wording.promptMetadata(system, user),
+          "action_schema_revision": "escrow-move-v1"
+        })
+        sim.applyMove(seat, parsed, true)
+      for seat in seats:
+        var executed: Move
+        for index in eventStart ..< sim.events.len:
+          let event = sim.events[index]
+          if event.seat != seat: continue
+          case event.kind
+          of evMove:
+            executed.say = event.say
+            executed.notes = sim.notes[seat]
+          of evOffer: executed.offer = event.dsl
+          of evSign:
+            if event.ok: executed.signs.add(event.id)
+          of evGive:
+            if event.ok:
+              executed.gives.add(GiveOrder(to: event.target, n: event.n, good: event.good))
+          else: discard
+        if decisionJson(executed) == proposals[seat]:
+          rows.add(records[seat])
+    doAssert rows.len > 0 and sim.reason == "complete"
+    let outcome = sim.resultsJson()
+    if seed mod 5 == 0:
+      validationRows.add(rows)
+    else:
+      trainRows.add(rows)
+    runs.add(%*{"seed": seed, "decisions": rows.len,
+      "scores": outcome["scores"], "hearts_minted": outcome["heartsMinted"],
+      "prompt_selection": wording.selectionMetadata()})
+  writeFile(output / "train.jsonl", trainRows.join("\n") & "\n")
+  writeFile(output / "validation.jsonl", validationRows.join("\n") & "\n")
+  writeFile(output / "manifest.json", pretty(%*{
+    "schema_version": 1,
+    "game": "escrow",
+    "variant": variant,
+    "source_revision": sourceRevision,
+    "teacher": "scripted-trader",
+    "operator_prompt": OperatorPrompt,
+    "train_examples": trainRows.len,
+    "validation_examples": validationRows.len,
+    "runs": runs
+  }) & "\n")
+  echo "train=", trainRows.len, " validation=", validationRows.len
