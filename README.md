@@ -168,3 +168,6 @@ For a local scripted episode against three traders:
 ```bash
 bash tools/local_episode.sh 7 8
 ```
+
+See [TRAINING.md](TRAINING.md) for episode-stable prompt variants, complete text
+actions, wording metadata, and seeded teacher exports.

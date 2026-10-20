@@ -42,6 +42,7 @@ const
 
 type
   GameState = object
+    selection: PromptSelection
     config: GameConfig
     sim: Sim
     prompts: seq[string]
@@ -346,7 +347,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       ## Model requests (ONE parallel batch for the turn) run
       ## outside the lock on a snapshot; only this thread mutates the sim,
       ## so the snapshot cannot go stale.
-      var decisions = client.decideAll(simCopy, seats, prompts, scripted)
+      var decisions = client.decideAll(simCopy, seats, prompts, scripted, state.selection)
       let deadline = epochTime() + config.llmTimeoutSeconds.float
       while epochTime() < deadline:
         var ready = true
@@ -611,6 +612,7 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
 proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   if config.tokens.len != config.players.len:
     raise newException(EscrowError, "tokens and players must align")
+  state.selection = promptSelection(parseJson(runtimeConfig.config))
   state.config = config
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)

@@ -1,8 +1,8 @@
 # Escrow training
 
 `tools/export_posttrain.nim` records full matches with the shipped trader
-teacher, hosted prompts, and production simulator. See that exporter for the
-ten-game dataset command.
+teacher, hosted prompts, and production simulator. See [prompt variants and teacher exports](../TRAINING.md) for the
+ten-game export command and seed-family partitioning.
 
 `tools/train_bridge.nim` exposes the same hosted prompts and a fixed 71-value
 observation for numeric training. A choice selects the shipped hoarder or
