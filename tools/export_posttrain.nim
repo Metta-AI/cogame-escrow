@@ -82,7 +82,8 @@ when isMainModule:
         let system = systemPrompt(view, seat, wording)
         let user = userPrompt(view, seat, OperatorPrompt)
         records[seat] = $(%*{
-          "episode_id": "escrow-" & variant & "-" & $seed & "-" & $wording.selectedVariant,
+          "episode_id": "escrow-" & variant & "-" & $seed & "-" & $wording.variant & "-" &
+            $wording.selectedVariant & "-" & $wording.seed,
           "seed": "escrow-" & $seed,
           "decision_id": view.turn * Seats + seat,
           "prompt": [
