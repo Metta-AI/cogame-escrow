@@ -39,7 +39,8 @@ Rejected or normalized operations are not admitted as successful teacher labels.
 The original `train.jsonl`, `validation.jsonl`, and `manifest.json` files
 are preserved. Rows record wording metadata and message hashes; the manifest
 pins the source revision and each game's selection. Mixed selection cycles the
-five training wordings once per game. Seed families exclude variant and wording;
+five training wordings separately within each split. Episode IDs include wording
+to distinguish matched collections. Seed families exclude variant and wording;
 multiples of five enter validation. Held-out wordings are rejected.
 Output directories are private and must not already exist.
 
