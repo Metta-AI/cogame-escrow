@@ -34,6 +34,7 @@ import
   mummy,
   mummy/routers,
   llm,
+  training_capture,
   sim
 
 const
@@ -45,6 +46,7 @@ type
     selection: PromptSelection
     config: GameConfig
     sim: Sim
+    capture: RuntimeCapture
     prompts: seq[string]
     external: seq[bool]
     decisionId: int
@@ -240,6 +242,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
 
   sleep(500)
   echo "escrow: writing results and replay"
+  if state.capture != nil: state.capture.finishCapture(results)
   writeArtifact(
     runtimeConfig.resultsUri, $results, "application/json",
     "COGAME_RESULTS_METHOD"
@@ -312,6 +315,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var external: seq[bool]
       var decisionId: int
       var scripted: seq[ScriptKind]
+      var captures: seq[CapturedDecision]
       withLock stateLock:
         if state.sim.done:
           break
@@ -334,6 +338,15 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         state.pendingActions = newSeq[JsonNode](config.players.len)
         inc state.decisionId
         decisionId = state.decisionId
+        if state.capture != nil:
+          try:
+            captures = newSeq[CapturedDecision](Seats)
+            let preHash = nativeStateHash(state.sim)
+            for seat in seats:
+              captures[seat] = state.capture.beginDecision($decisionId & "-" & $seat,
+                (if external[seat]: "external" elif scripted[seat] != skNone: $scripted[seat] else: "prompt"),
+                state.playerStateJson(seat), state.selection.selectionMetadata(), preHash)
+          except CatchableError as error: state.capture.captureError(error.msg)
         for seat in seats:
           if external[seat] and state.playerSockets.hasKey(seat):
             state.playerSockets[seat].send($ %*{
@@ -347,7 +360,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       ## Model requests (ONE parallel batch for the turn) run
       ## outside the lock on a snapshot; only this thread mutates the sim,
       ## so the snapshot cannot go stale.
-      var decisions = client.decideAll(simCopy, seats, prompts, scripted, state.selection)
+      var decisions = client.decideAll(simCopy, seats, prompts, scripted, state.selection, captures)
       let deadline = epochTime() + config.llmTimeoutSeconds.float
       while epochTime() < deadline:
         var ready = true
@@ -366,6 +379,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             decisions[index] = SeatDecision(move: move, scripted: false)
 
       withLock stateLock:
+        let beforeEvents = if state.capture != nil: state.sim.events.len else: 0
         for index, seat in seats:
           let decision = decisions[index].move
           ## Not the registration state: `decideAll` reports the baseline
@@ -386,6 +400,11 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
               "); using the trader baseline"
             let fallback = scriptedAction(state.sim, seat, skTrader)
             state.sim.applyMove(seat, fallback, true)
+        if state.capture != nil:
+          try:
+            state.capture.appliedTurn(captures, simCopy.turn, state.sim,
+              state.sim.events[beforeEvents ..< state.sim.events.len])
+          except CatchableError as error: state.capture.captureError(error.msg)
         state.broadcastLocked()
 
       ## Pace between turns so spectators can read the floor.
@@ -615,6 +634,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.selection = promptSelection(parseJson(runtimeConfig.config))
   state.config = config
   state.sim = initSim(config)
+  state.capture = newRuntimeCapture(state.sim, runtimeConfig.resultsUri, runtimeConfig.replayUri)
   state.prompts = newSeq[string](config.players.len)
   state.external = newSeq[bool](config.players.len)
   state.pendingActions = newSeq[JsonNode](config.players.len)
