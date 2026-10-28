@@ -115,7 +115,7 @@ proc newRuntimeCapture*(sim: Sim, resultsUri, replayUri: string): RuntimeCapture
         destination == destinationIdentity(replayUri):
       raise newException(ValueError, "private trajectory destination collides with public results/replay")
     (result.family, result.task) = identities(sim)
-    for name in ["COWORLD_EPISODE_ID", "COWORLD_GAME_VERSION", "COWORLD_SOURCE_REVISION"]:
+    for name in ["COWORLD_EPISODE_ID", "COWORLD_GAME_VERSION", "COWORLD_SOURCE_REVISION", "COWORLD_GAME_NAME"]:
       if not scalarUtf8(getEnv(name)):
         raise newException(ValueError, "non-Unicode trajectory identity: " & name)
     result.trajectory = newDecisionTrajectory(getEnv("COWORLD_EPISODE_ID"),
