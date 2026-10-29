@@ -21,10 +21,10 @@
 ## scripted plays one deliberately, LLM or not.
 
 import
-  std/[algorithm, json, math, os, strutils, unicode],
+  std/[algorithm, json, math, monotimes, os, strutils, times, unicode],
   bitworld/runtime,
   curly,
-  sim, prompts
+  sim, prompts, training_capture
 export prompts
 
 const
@@ -814,7 +814,8 @@ proc decideAll*(
   seats: seq[int],
   prompts: seq[string],
   scripted: seq[ScriptKind],
-  selection: PromptSelection
+  selection: PromptSelection,
+  captures: seq[CapturedDecision] = @[]
 ): seq[SeatDecision] =
   ## One decision per seat in `seats`, in order, each tagged with whether
   ## the scripted baseline produced it. Never raises: any failure falls
@@ -846,14 +847,25 @@ proc decideAll*(
         user.add("\n\nYour previous reply was invalid: " & hints[index] &
           ". Respond with ONLY the requested JSON object.")
       let request = client.requestFor(systemPrompt(sim, seat, selection), user, seat)
+      if seat < captures.len and captures[seat] != nil:
+        captures[seat].beginAttempt()
+        captures[seat].requested(request.body, request.headers)
       batch.post(request.url, request.headers, request.body, $index)
+    var batchStarted: MonoTime
+    if captures.len > 0: batchStarted = getMonoTime()
     let responses = client.curl.makeRequests(batch, client.timeoutSeconds)
+    let batchElapsedMs = if captures.len > 0:
+      (getMonoTime() - batchStarted).inMilliseconds.int else: 0
     var stillOpen: seq[int]
     for position, index in open:
       let seat = seats[index]
+      let capture = if seat < captures.len: captures[seat] else: nil
+      if capture != nil:
+        capture.received(responses[position].response, responses[position].error, batchElapsedMs)
       try:
         let text = client.textOf(responses[position].response,
           responses[position].error, batch[position].url)
+        if capture != nil: capture.replyText(text, firstJsonObject(text))
         let decision = parseDecision(extractJsonObject(text), sim, seat)
         ## Reject illegal replies here so the retry carries the hint. The
         ## strict validator walks the sim's own resolution order on a copy
@@ -863,6 +875,7 @@ proc decideAll*(
           raise newException(EscrowError, problem)
         result[index] = SeatDecision(move: decision, scripted: false)
       except CatchableError as error:
+        if capture != nil: capture.rejectedAttempt(error.msg)
         echo "escrow llm: seat ", seat, " attempt ", attempt, " failed: ",
           error.msg
         hints[index] = cleanText(error.msg, 300)
